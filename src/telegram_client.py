@@ -31,7 +31,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from aiotdlib import Client, ClientSettings
 from aiotdlib.api.errors.error import AioTDLibError
-from aiotdlib.api import types as td
+#from aiotdlib.api import types as td
+from aiotdlib.api import API, types as td
+
 
 from .config import get_config
 
@@ -130,7 +132,9 @@ class TelegramClient:
         self._client = Client(settings=settings)
 
         # Register a single catch-all handler; we dispatch by update type.
-        self._client.add_event_handler(self._handle_update, td.API.Types.ANY)
+#        self._client.add_event_handler(self._handle_update, td.API.Types.ANY)
+        self._client.add_event_handler(self._handle_update, API.Types.ANY)
+
 
         logger.info("Starting Telegram client and authenticating...")
         try:
