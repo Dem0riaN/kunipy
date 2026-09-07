@@ -100,8 +100,19 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-import tomli
-import tomli_w
+try:
+    import tomli
+    import tomli_w
+except ImportError:
+    print(
+        "error: this script needs the 'tomli' and 'tomli-w' packages to read/write config.toml.\n"
+        "Install them with:\n"
+        "    pip install tomli tomli-w\n"
+        "or install kunipy's own dependencies from the repo root:\n"
+        "    pip install -e .",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 # --- 1. config.toml ---------------------------------------------------------
 
