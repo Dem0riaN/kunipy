@@ -198,20 +198,33 @@ class OpenAIChat:
     def _record_usage_metrics(self, response: ChatResponse) -> None:
         """Record token usage from a completed chat response, if the
         `metrics` module (prometheus_client) is available."""
+        # Отладочный вывод (можно удалить после проверки)
+        print(f"DEBUG: entering _record_usage_metrics, response.usage = {response.usage}")
         try:
             from .metrics import record_usage
         except ImportError:
             return
-        usage = response.usage or {}
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
-        cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0) or 0
-        record_usage(
-            model=response.model or self.endpoint.model,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cached_tokens=cached_tokens,
-        )
+        try:
+            usage = response.usage
+            if not isinstance(usage, dict):
+                usage = {}
+            print(f"DEBUG: usage after check = {usage}")
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            # Безопасное получение cached_tokens
+            details = usage.get("prompt_tokens_details")
+            if isinstance(details, dict):
+                cached_tokens = details.get("cached_tokens", 0) or 0
+            else:
+                cached_tokens = 0
+            record_usage(
+                model=response.model or self.endpoint.model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+            )
+        except Exception as e:
+            logger.error(f"Failed to record usage metrics: {e}", exc_info=True)
 
     def _parse_response(self, data: dict) -> ChatResponse:
         return ChatResponse(
