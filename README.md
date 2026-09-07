@@ -79,7 +79,7 @@ cd kunipy
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 
-# Install dependencies
+# Install kunipy and all its dependencies
 pip install -e .
 # or, for running the test suite too:
 pip install -e ".[dev]"

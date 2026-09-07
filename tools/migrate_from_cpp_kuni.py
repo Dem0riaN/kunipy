@@ -3,10 +3,10 @@
 
 IMPORTANT: `--source` must point at the *working directory* the C++ binary
 actually runs from -- typically `build/bin/` inside the kuni repo checkout,
-NOT the repo root itself. That's where `config.toml`, `diary/`,
-`working_memory.md`, `prompts/`, and `tdlib/` actually live at runtime
-(confirmed against the real C++ source, see comments below -- the repo root
-only has the build system and source code).
+NOT the repo root itself. That's where `config.toml`, `data/diary/`,
+`data/working_memory.md`, `prompts/`, and `tdlib/` actually live at runtime
+(confirmed against the real C++ source AND a live instance's directory
+listing -- the repo root only has the build system and source code).
 
 The C++ and Python versions are close cousins -- most of the on-disk state is
 either byte-compatible or a trivial rename/relocation away from it. This tool
@@ -40,7 +40,10 @@ copies and converts, in one pass:
    you made to those other 11 files will not take effect until kunipy grows
    equivalent hooks.
 
-3. **diary/*.md** (source: `<source>/diary/`, NOT `<source>/data/diary/`)
+3. **data/diary/*.md** (source: `<source>/data/diary/` -- `AppBase`'s
+   `workingDir` is hardcoded to `"data"` in `main.cpp`, independent of the
+   process's actual working directory, which is also where `prompts/` and
+   `tdlib/` live instead)
    -- same on-disk shape (`---\\n{json metadata}\\n---\\n{body}`), but the
    C++ version's JSON metadata uses camelCase keys (`lastUsed`,
    `usageCount`) where kunipy uses snake_case (`last_used`, `usage_count`).
@@ -55,8 +58,8 @@ copies and converts, in one pass:
    entry, the first time each is queried) instead of silently comparing
    incompatible vectors.
 
-4. **working_memory.md** (source: `<source>/working_memory.md`, NOT
-   `<source>/data/working_memory.md`) -- the C++ version stores this as a
+4. **data/working_memory.md** (source: `<source>/data/working_memory.md`)
+   -- the C++ version stores this as a
    single freeform markdown blob (LLM-authored, no structure kunipy could
    reuse directly). kunipy's own working-memory store is a small key/value
    cache; this tool imports the blob whole under the `things_to_remember`
@@ -232,11 +235,16 @@ def convert_diary_entry(raw_text: str, strip_embeddings: bool) -> str:
 
 def migrate_diary(source_dir: Path, dest_dir: Path, strip_embeddings: bool, dry_run: bool) -> int:
     if not source_dir.is_dir():
+        print(f"  diary: {source_dir} not found, skipping")
         return 0
     if not dry_run:
         dest_dir.mkdir(parents=True, exist_ok=True)
     count = 0
-    for entry_path in sorted(source_dir.glob("*.md")):
+    entries = sorted(source_dir.glob("*.md"))
+    if not entries:
+        print(f"  diary: {source_dir} exists but has no .md entries, nothing to convert")
+        return 0
+    for entry_path in entries:
         converted = convert_diary_entry(entry_path.read_text(encoding="utf-8"), strip_embeddings)
         dest_path = dest_dir / entry_path.name
         print(f"  diary: {entry_path.name}" + (" (dry-run)" if dry_run else ""))
@@ -250,9 +258,11 @@ def migrate_diary(source_dir: Path, dest_dir: Path, strip_embeddings: bool, dry_
 
 def migrate_working_memory(source_md: Path, dest_json: Path, dry_run: bool) -> bool:
     if not source_md.is_file():
+        print(f"  working memory: {source_md} not found, skipping")
         return False
     text = source_md.read_text(encoding="utf-8").strip()
     if not text:
+        print(f"  working memory: {source_md} exists but is empty, skipping")
         return False
 
     print(f"  working memory: {source_md} -> {dest_json} (key='things_to_remember')" + (" (dry-run)" if dry_run else ""))
@@ -314,8 +324,8 @@ def main() -> int:
     if (source / "CMakeLists.txt").exists() and not (source / "config.toml").exists():
         print(
             f"error: {source} looks like the kuni repo checkout (has CMakeLists.txt), not its runtime "
-            f"working directory. Point --source at the folder containing config.toml, diary/, "
-            f"working_memory.md, prompts/, and tdlib/ -- typically <repo>/build/bin.",
+            f"working directory. Point --source at the folder containing config.toml, data/diary/, "
+            f"data/working_memory.md, prompts/, and tdlib/ -- typically <repo>/build/bin.",
             file=sys.stderr,
         )
         return 1
@@ -346,14 +356,17 @@ def main() -> int:
     if not args.skip_character:
         migrate_prompts(source / "prompts", dest, args.dry_run)
 
-    # 3. diary (real path: <source>/diary/, NOT <source>/data/diary/)
+    # 3. diary (real path: <source>/data/diary/ -- AppBase's workingDir is
+    # hardcoded to "data" in main.cpp, independent of the process's actual
+    # CWD, which is also where prompts/ and tdlib/ live)
     if not args.skip_diary:
-        n = migrate_diary(source / "diary", dest / "data" / "diary", args.strip_embeddings, args.dry_run)
-        print(f"  diary: {n} entries" + (" would be " if args.dry_run else " ") + "converted")
+        n = migrate_diary(source / "data" / "diary", dest / "data" / "diary", args.strip_embeddings, args.dry_run)
+        if n:
+            print(f"  diary: {n} entries" + (" would be " if args.dry_run else " ") + "converted")
 
-    # 4. working memory (real path: <source>/working_memory.md, NOT <source>/data/working_memory.md)
+    # 4. working memory (real path: <source>/data/working_memory.md)
     if not args.skip_working_memory:
-        migrate_working_memory(source / "working_memory.md", dest / "data" / "working_memory.json", args.dry_run)
+        migrate_working_memory(source / "data" / "working_memory.md", dest / "data" / "working_memory.json", args.dry_run)
 
     # 5. tdlib session
     if not args.skip_tdlib:
