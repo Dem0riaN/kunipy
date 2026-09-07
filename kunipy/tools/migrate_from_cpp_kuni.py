@@ -1,30 +1,52 @@
 #!/usr/bin/env python3
 """Migrate a working instance of the original C++ kuni (Alex2772/kuni) to kunipy.
 
+IMPORTANT: `--source` must point at the *working directory* the C++ binary
+actually runs from -- typically `build/bin/` inside the kuni repo checkout,
+NOT the repo root itself. That's where `config.toml`, `diary/`,
+`working_memory.md`, `prompts/`, and `tdlib/` actually live at runtime
+(confirmed against the real C++ source, see comments below -- the repo root
+only has the build system and source code).
+
 The C++ and Python versions are close cousins -- most of the on-disk state is
-either byte-compatible or a trivial rename away from it. This tool copies and
-converts, in one pass:
+either byte-compatible or a trivial rename/relocation away from it. This tool
+copies and converts, in one pass:
 
-1. **config.toml** -- almost every key already matches 1:1
-   (`general.character_name`, `misc.diary_token_count_trigger`, ...). The one
-   real difference: the C++ `Endpoint` struct serializes as
-   `{baseUrl, bearerKey}`, while kunipy uses `{base_url, bearer_key}`. This
-   tool walks the whole TOML tree and renames those keys wherever they
-   appear (`general.llm.endpoint`, `general.embedding.endpoint`,
-   `capabilities.take_photo.sd.endpoint`, `capabilities.vision.*.endpoint`,
-   `capabilities.hearing.llm_audio_to_text.endpoint`), keeping every other
-   value untouched.
+1. **config.toml** (source: `<source>/config.toml`) -- almost every key
+   already matches 1:1 (`general.character_name`,
+   `misc.diary_token_count_trigger`, ...). The one real difference: the C++
+   `Endpoint` struct serializes as `{baseUrl, bearerKey}`, while kunipy uses
+   `{base_url, bearer_key}`. This tool walks the whole TOML tree and renames
+   those keys wherever they appear (`general.llm.endpoint`,
+   `general.embedding.endpoint`, `capabilities.take_photo.sd.endpoint`, ...),
+   keeping every other value untouched.
 
-2. **character_base.md / character_appearance.md** -- byte-identical format
-   (front-matter delimited by `---`, stripped by both versions before use),
-   copied as-is.
+2. **prompts/character_base.md, prompts/character_appearance.md**
+   (source: `<source>/prompts/*.md`) -- byte-identical format (front-matter
+   delimited by `---`, stripped by both versions before use), copied to
+   kunipy's `character_base.md` / `character_appearance.md` at the kunipy
+   working directory root (kunipy doesn't nest them under `prompts/`).
 
-3. **data/diary/*.md** -- same on-disk shape
-   (`---\\n{json metadata}\\n---\\n{body}`), but the C++ version's JSON
-   metadata uses camelCase keys (`lastUsed`, `usageCount`) where kunipy uses
-   snake_case (`last_used`, `usage_count`). `score`, `confidence`, and
-   `embedding` are already identical. This tool renames the keys and
-   rewrites each entry in kunipy's format.
+   The C++ version actually has *eleven more* prompt files under `prompts/`
+   (`system.md`, `diary_save.md`, `sleep_consolidator.md`, `anti_repeat.md`,
+   `photo_to_text.md`, `sticker_to_text.md`, `image_engineer_*.md`,
+   `messages_epilogue.md`, `record_audio_speech.md`, ...) that fine-tune
+   individual sub-behaviors kunipy currently implements directly in Python
+   rather than as separate editable prompt files. This tool copies the
+   *entire* `prompts/` directory into kunipy's `prompts/` folder for
+   reference/safekeeping, but -- to be explicit -- **kunipy does not read
+   anything from `prompts/` yet** other than what this script also copies
+   out to `character_base.md`/`character_appearance.md`. Any customization
+   you made to those other 11 files will not take effect until kunipy grows
+   equivalent hooks.
+
+3. **diary/*.md** (source: `<source>/diary/`, NOT `<source>/data/diary/`)
+   -- same on-disk shape (`---\\n{json metadata}\\n---\\n{body}`), but the
+   C++ version's JSON metadata uses camelCase keys (`lastUsed`,
+   `usageCount`) where kunipy uses snake_case (`last_used`, `usage_count`).
+   `score`, `confidence`, and `embedding` are already identical. This tool
+   renames the keys and rewrites each entry in kunipy's format
+   (`<dest>/data/diary/`).
 
    IMPORTANT: `embedding` vectors are only valid for the embedding *model*
    that produced them. If your kunipy `[general.embedding]` uses a
@@ -33,24 +55,37 @@ converts, in one pass:
    entry, the first time each is queried) instead of silently comparing
    incompatible vectors.
 
-4. **data/working_memory.md** -- the C++ version stores this as a single
-   freeform markdown blob (LLM-authored, no structure kunipy could reuse
-   directly). kunipy's own working-memory store is a small key/value cache;
-   this tool imports the blob whole under the `things_to_remember` key,
-   which is exactly the key kunipy's worker reads to build
+4. **working_memory.md** (source: `<source>/working_memory.md`, NOT
+   `<source>/data/working_memory.md`) -- the C++ version stores this as a
+   single freeform markdown blob (LLM-authored, no structure kunipy could
+   reuse directly). kunipy's own working-memory store is a small key/value
+   cache; this tool imports the blob whole under the `things_to_remember`
+   key, which is exactly the key kunipy's worker reads to build
    `<things_to_remember>` -- so nothing else needs to change.
 
-5. **TDLib session** (`tdlib/` in the C++ working directory) -- both
-   versions link the *same* TDLib library and use the same on-disk database
-   format, so the session can be reused directly: this tool just copies the
-   directory to where kunipy's `TelegramClient` expects it
-   (`data/tdlib/` by default). This means **no re-login is required**.
-   Only do this after stopping the C++ instance -- TDLib's local database
-   is not safe for two processes to hold open at once.
+5. **TDLib session** (`<source>/tdlib/`) -- both versions link the *same*
+   TDLib library and use the same on-disk database format, so the session
+   can be reused directly: this tool just copies the directory to where
+   kunipy's `TelegramClient` expects it (`<dest>/data/tdlib/` by default).
+   This means **no re-login is required**. Only do this after stopping the
+   C++ instance -- TDLib's local database is not safe for two processes to
+   hold open at once.
+
+Deliberately NOT migrated (ephemeral/regenerable, safe to leave behind):
+`cache/` (generated image/video cache), `logs/` and `logs_proxy/` (debug
+request logs), `last_query.json` / `data/proxy/last_query.json` (last-request
+debug dumps), `kuni_worker*.log`.
 
 Usage
 -----
-    python tools/migrate_from_cpp_kuni.py --source /path/to/cpp/kuni/workdir [options]
+    python tools/migrate_from_cpp_kuni.py --source /path/to/kuni/build/bin [options]
+
+For the directory layout in the original request, that's e.g.:
+
+    python tools/migrate_from_cpp_kuni.py \\
+        --source /mnt/g/AI/kuni/build/bin \\
+        --dest . \\
+        --dry-run
 
 Run with `--dry-run` first to see exactly what would be written, without
 touching anything.
@@ -91,6 +126,57 @@ def convert_config(source_toml: Path) -> Dict[str, Any]:
     with open(source_toml, "rb") as f:
         data = tomli.load(f)
     return _convert_toml_value(data)
+
+
+# --- 2. character files / prompts directory ---------------------------------
+
+_CHARACTER_FILES = {
+    "character_base.md": "character_base.md",
+    "character_appearance.md": "character_appearance.md",
+}
+
+# Present in C++ kuni's prompts/ but not (yet) read by kunipy at all. Copied
+# for reference/safekeeping only -- listed explicitly so we can warn loudly.
+_UNUSED_BY_KUNIPY = [
+    "system.md", "photo_to_text.md", "sticker_to_text.md", "anti_repeat.md",
+    "diary_save.md", "sleep_consolidator.md", "record_audio_speech.md",
+    "messages_epilogue.md", "image_engineer_system.md",
+    "image_engineer_instructions.md", "image_assess_system.md",
+]
+
+
+def migrate_prompts(source_prompts_dir: Path, dest_root: Path, dry_run: bool) -> None:
+    """Copy prompts/character_base.md and prompts/character_appearance.md to
+    kunipy's working-dir root, and mirror the rest of prompts/ verbatim into
+    kunipy's own prompts/ folder for reference (unused by kunipy today)."""
+    if not source_prompts_dir.is_dir():
+        print(f"  prompts: {source_prompts_dir} not found, skipping")
+        return
+
+    for src_name, dest_name in _CHARACTER_FILES.items():
+        src = source_prompts_dir / src_name
+        if not src.is_file():
+            print(f"  character: {src} not found, skipping")
+            continue
+        dst = dest_root / dest_name
+        print(f"  character: {src} -> {dst}" + (" (dry-run)" if dry_run else ""))
+        if dry_run:
+            continue
+        if dst.exists():
+            print(f"  ! {dst} already exists, leaving it alone (kunipy never overwrites these either)")
+        else:
+            shutil.copyfile(src, dst)
+
+    found_unused = [n for n in _UNUSED_BY_KUNIPY if (source_prompts_dir / n).is_file()]
+    if found_unused:
+        dest_prompts_dir = dest_root / "prompts"
+        print(f"  prompts: copying {len(found_unused)} additional prompt file(s) to {dest_prompts_dir} "
+              f"for reference (kunipy does not read these yet: {', '.join(found_unused)})"
+              + (" (dry-run)" if dry_run else ""))
+        if not dry_run:
+            dest_prompts_dir.mkdir(parents=True, exist_ok=True)
+            for name in found_unused:
+                shutil.copyfile(source_prompts_dir / name, dest_prompts_dir / name)
 
 
 # --- 3. diary entries --------------------------------------------------------
@@ -214,7 +300,18 @@ def main() -> int:
         print(f"error: --source {source} is not a directory", file=sys.stderr)
         return 1
 
+    if (source / "CMakeLists.txt").exists() and not (source / "config.toml").exists():
+        print(
+            f"error: {source} looks like the kuni repo checkout (has CMakeLists.txt), not its runtime "
+            f"working directory. Point --source at the folder containing config.toml, diary/, "
+            f"working_memory.md, prompts/, and tdlib/ -- typically <repo>/build/bin.",
+            file=sys.stderr,
+        )
+        return 1
+
     print(f"Migrating {source} -> {dest}" + (" [DRY RUN]" if args.dry_run else ""))
+    if not args.dry_run:
+        dest.mkdir(parents=True, exist_ok=True)
 
     # 1. config.toml
     if not args.skip_config:
@@ -234,29 +331,18 @@ def main() -> int:
         else:
             print(f"  config: no config.toml found in {source}, skipping")
 
-    # 2. character files
+    # 2. character files (+ rest of prompts/, for reference)
     if not args.skip_character:
-        for name in ("character_base.md", "character_appearance.md"):
-            src = source / name
-            if src.is_file():
-                dst = dest / name
-                print(f"  character: {src} -> {dst}" + (" (dry-run)" if args.dry_run else ""))
-                if not args.dry_run:
-                    if dst.exists():
-                        print(f"  ! {dst} already exists, leaving it alone (kunipy never overwrites these either)")
-                    else:
-                        shutil.copyfile(src, dst)
-            else:
-                print(f"  character: {src} not found, skipping")
+        migrate_prompts(source / "prompts", dest, args.dry_run)
 
-    # 3. diary
+    # 3. diary (real path: <source>/diary/, NOT <source>/data/diary/)
     if not args.skip_diary:
-        n = migrate_diary(source / "data" / "diary", dest / "data" / "diary", args.strip_embeddings, args.dry_run)
+        n = migrate_diary(source / "diary", dest / "data" / "diary", args.strip_embeddings, args.dry_run)
         print(f"  diary: {n} entries" + (" would be " if args.dry_run else " ") + "converted")
 
-    # 4. working memory
+    # 4. working memory (real path: <source>/working_memory.md, NOT <source>/data/working_memory.md)
     if not args.skip_working_memory:
-        migrate_working_memory(source / "data" / "working_memory.md", dest / "data" / "working_memory.json", args.dry_run)
+        migrate_working_memory(source / "working_memory.md", dest / "data" / "working_memory.json", args.dry_run)
 
     # 5. tdlib session
     if not args.skip_tdlib:

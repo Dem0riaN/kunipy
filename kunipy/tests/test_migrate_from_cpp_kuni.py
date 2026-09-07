@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from migrate_from_cpp_kuni import convert_config, convert_diary_entry, migrate_diary, migrate_working_memory  # noqa: E402
+from migrate_from_cpp_kuni import convert_config, convert_diary_entry, migrate_diary, migrate_prompts, migrate_working_memory  # noqa: E402
 
 
 def test_convert_config_renames_endpoint_keys_anywhere_in_tree():
@@ -115,3 +115,57 @@ def test_migrate_working_memory_maps_to_things_to_remember_key(tmp_path):
 def test_migrate_working_memory_missing_source_is_noop(tmp_path):
     ok = migrate_working_memory(tmp_path / "does_not_exist.md", tmp_path / "out.json", dry_run=False)
     assert ok is False
+
+
+def test_migrate_prompts_extracts_character_files_and_mirrors_rest(tmp_path):
+    source_prompts = tmp_path / "prompts"
+    source_prompts.mkdir()
+    (source_prompts / "character_base.md").write_text("---\nc\n---\nYou are Kuni.", encoding="utf-8")
+    (source_prompts / "character_appearance.md").write_text("---\nc\n---\nBlue hair.", encoding="utf-8")
+    (source_prompts / "system.md").write_text("Kernel prompt.", encoding="utf-8")
+    (source_prompts / "anti_repeat.md").write_text("Anti-repeat nudge.", encoding="utf-8")
+
+    dest = tmp_path / "kunipy_dest"
+    dest.mkdir()
+    migrate_prompts(source_prompts, dest, dry_run=False)
+
+    assert (dest / "character_base.md").read_text(encoding="utf-8") == "---\nc\n---\nYou are Kuni."
+    assert (dest / "character_appearance.md").read_text(encoding="utf-8") == "---\nc\n---\nBlue hair."
+    # Files kunipy doesn't read yet are mirrored under dest/prompts/ for reference.
+    assert (dest / "prompts" / "system.md").read_text(encoding="utf-8") == "Kernel prompt."
+    assert (dest / "prompts" / "anti_repeat.md").read_text(encoding="utf-8") == "Anti-repeat nudge."
+
+
+def test_migrate_prompts_does_not_overwrite_existing_character_files(tmp_path):
+    source_prompts = tmp_path / "prompts"
+    source_prompts.mkdir()
+    (source_prompts / "character_base.md").write_text("new content", encoding="utf-8")
+
+    dest = tmp_path / "kunipy_dest"
+    dest.mkdir()
+    (dest / "character_base.md").write_text("existing custom persona", encoding="utf-8")
+
+    migrate_prompts(source_prompts, dest, dry_run=False)
+
+    assert (dest / "character_base.md").read_text(encoding="utf-8") == "existing custom persona"
+
+
+def test_migrate_prompts_dry_run_writes_nothing(tmp_path):
+    source_prompts = tmp_path / "prompts"
+    source_prompts.mkdir()
+    (source_prompts / "character_base.md").write_text("content", encoding="utf-8")
+    (source_prompts / "system.md").write_text("content", encoding="utf-8")
+
+    dest = tmp_path / "kunipy_dest"
+    dest.mkdir()
+    migrate_prompts(source_prompts, dest, dry_run=True)
+
+    assert not (dest / "character_base.md").exists()
+    assert not (dest / "prompts").exists()
+
+
+def test_migrate_prompts_missing_source_dir_is_noop(tmp_path):
+    dest = tmp_path / "kunipy_dest"
+    dest.mkdir()
+    migrate_prompts(tmp_path / "does_not_exist", dest, dry_run=False)
+    assert not (dest / "character_base.md").exists()
