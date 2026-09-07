@@ -1,0 +1,39 @@
+[project]
+name = "kunipy"
+version = "0.1.0"
+description = "Python port of kuni - LLM character AI with Telegram interface"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "tomli>=2.0.0",
+    "tomli-w>=1.0.0",
+    "sentence-transformers>=2.2.0",
+    "chromadb>=0.5.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "python-dotenv>=1.0.0",
+    "watchdog>=4.0.0",
+    "numpy>=1.24.0",
+    "aiotdlib>=0.20.0",  # TDLib async client
+    "prometheus_client>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
