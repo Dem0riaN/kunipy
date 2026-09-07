@@ -2,33 +2,43 @@
 
 Provides async wrapper around TDLib for message handling, chat management,
 and event streaming with full userbot capabilities.
+
+IMPORTANT: this module talks to the *real* aiotdlib public API (verified against
+aiotdlib's installed source, since large parts of its public surface are
+convenience methods on `aiotdlib.Client`, not on `Client.api`). Concretely:
+
+- Client is constructed from a single `ClientSettings` object.
+- Phone-number / 2FA / registration interactive login is handled internally
+  by aiotdlib (`Client.start()` -> `Client.authorize()`), no manual callback
+  is needed or possible.
+- High level actions (send_text, send_photo, send_voice_note, send_sticker,
+  forward_messages, edit_text, get_chat, get_user, get_main_list_chats,
+  iter_chat_history) are methods on `Client` itself.
+- Anything without a `Client` convenience wrapper is called through
+  `Client.api.<tdlib_function_name>(...)`, using the *real* TDLib function
+  names (e.g. `open_chat`, `close_chat`, `view_messages`,
+  `add_message_reaction`, `search_chats`, `search_chat_messages`,
+  `get_stickers`, `add_favorite_sticker`, `send_chat_action`, `get_file`).
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 
-from aiotdlib import Client, TDLibError
-from aiotdlib.api import (
-    Chat,
-    ChatType,
-    Message,
-    MessageSender,
-    MessageSenderUser,
-    Update,
-    UpdateNewMessage,
-    UpdateChat,
-    UpdateUser,
-)
+from aiotdlib import Client, ClientSettings
+from aiotdlib.api.errors.error import AioTDLibError
+from aiotdlib.api import types as td
 
 from .config import get_config
 
 logger = logging.getLogger(__name__)
+
+# Alias kept for callers that want to catch Telegram-specific errors.
+TDLibError = AioTDLibError
 
 
 @dataclass
@@ -83,59 +93,51 @@ class TelegramClient:
         config = get_config()
         self.api_id = api_id or config.telegram_api_id
         self.api_hash = api_hash or config.telegram_api_hash
-        self.database_dir = Path(database_dir)
-        self.files_dir = Path(files_dir)
+        # aiotdlib only exposes a single `files_directory`; TDLib keeps its
+        # own database files alongside the downloaded files under that path.
+        self.files_dir = Path(database_dir if database_dir else files_dir)
         self._client: Optional[Client] = None
         self._my_id: Optional[int] = None
         self._is_ready = False
         self._chat_cache: Dict[int, TelegramChat] = {}
         self._user_cache: Dict[int, TelegramUser] = {}
-        self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
-        self._loop_task: Optional[asyncio.Task] = None
+        self._callbacks: List[Callable[[Dict[str, Any]], Any]] = []
 
     async def start(self, phone_number: Optional[str] = None) -> None:
-        """Initialize connection to Telegram and authenticate."""
+        """Initialize connection to Telegram and authenticate.
+
+        Phone number / SMS-code / 2FA-password / registration prompts are all
+        handled interactively by aiotdlib itself (it reads from stdin), so we
+        just need to provide the phone number (if we have one) and wait.
+        """
         if not self.api_id or not self.api_hash:
             raise ValueError("Telegram API ID and hash must be set in config.toml")
 
-        self.database_dir.mkdir(parents=True, exist_ok=True)
         self.files_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create client
-        self._client = Client(
-            api_id=self.api_id,
-            api_hash=self.api_hash,
-            database_directory=str(self.database_dir),
-            files_directory=str(self.files_dir),
-            use_test_dc=False,
-        )
-
-        # Register update handlers
-        self._client.add_update_handler(self._handle_update)
-
-        # If phone number not passed, try config
         if phone_number is None:
             config = get_config()
-            phone_number = config.telegram_phone or None
+            phone_number = getattr(config, "telegram_phone", "") or None
 
-        # Define code request handler
-        async def on_code(phone: str, code_type: str) -> str:
-            logger.info(f"Code requested for {phone}, type: {code_type}")
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, input, f"Enter code for {phone}: ")
+        settings = ClientSettings(
+            api_id=self.api_id,
+            api_hash=self.api_hash,
+            phone_number=phone_number,
+            files_directory=self.files_dir,
+            device_model="kunipy",
+            application_version="0.1.0",
+        )
+        self._client = Client(settings=settings)
 
-        # Start the client (this connects and authenticates)
+        # Register a single catch-all handler; we dispatch by update type.
+        self._client.add_event_handler(self._handle_update, td.API.Types.ANY)
+
         logger.info("Starting Telegram client and authenticating...")
         try:
-            await self._client.start(
-                phone_number=phone_number,
-                on_code=on_code,
-            )
-            # Get my user info
-            me = await self._client.get_me()
-            self._my_id = me.id
+            await self._client.start()
+            self._my_id = await self._client.get_my_id()
             self._is_ready = True
-            logger.info(f"Logged in as {me.first_name} (ID: {self._my_id})")
+            logger.info(f"Logged in, my_id={self._my_id}")
         except Exception as e:
             logger.error(f"Failed to start Telegram client: {e}")
             raise
@@ -144,9 +146,7 @@ class TelegramClient:
         """Shutdown Telegram client."""
         self._is_ready = False
         if self._client:
-            await self._client.close()
-        if self._loop_task and not self._loop_task.done():
-            self._loop_task.cancel()
+            await self._client.stop()
 
     async def wait_for_connection(self) -> None:
         """Wait until the client is connected and ready."""
@@ -169,25 +169,64 @@ class TelegramClient:
         """Send a text message to a chat."""
         if not self._client:
             raise RuntimeError("Client not initialized")
-
-        # Convert parse_mode to TDLib format
-        input_text = self._client.api.input_message_text(
-            text=text,
-            parse_mode=self._client.api.parse_mode_html() if parse_mode == "HTML" else None,
-        )
-        reply_to = self._client.api.message_send_options(
-            reply_to_message_id=reply_to_message_id,
-        ) if reply_to_message_id else None
-
         try:
-            msg = await self._client.send_message(
+            msg = await self._client.send_text(
                 chat_id=chat_id,
-                reply_to=reply_to,
-                input_message_content=input_text,
+                text=text,
+                reply_to_message_id=reply_to_message_id,
             )
             return self._convert_message(msg)
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to send message: {e}")
+            raise RuntimeError(f"Telegram error: {e}")
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        photo: str,
+        caption: str = "",
+        reply_to_message_id: Optional[int] = None,
+    ) -> Optional[TelegramMessage]:
+        """Send a photo to a chat.
+
+        `photo` may be a local file path or a remote Telegram file_id.
+        """
+        if not self._client:
+            raise RuntimeError("Client not initialized")
+        try:
+            msg = await self._client.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                caption=caption or None,
+                reply_to_message_id=reply_to_message_id,
+            )
+            return self._convert_message(msg) if msg else None
+        except AioTDLibError as e:
+            logger.error(f"Failed to send photo: {e}")
+            raise RuntimeError(f"Telegram error: {e}")
+
+    async def send_voice(
+        self,
+        chat_id: int,
+        voice: str,
+        caption: str = "",
+        duration: int = 0,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Optional[TelegramMessage]:
+        """Send a voice message (OGG/Opus, local path or file_id)."""
+        if not self._client:
+            raise RuntimeError("Client not initialized")
+        try:
+            msg = await self._client.send_voice_note(
+                chat_id=chat_id,
+                voice_note=voice,
+                caption=caption or None,
+                duration=duration,
+                reply_to_message_id=reply_to_message_id,
+            )
+            return self._convert_message(msg) if msg else None
+        except AioTDLibError as e:
+            logger.error(f"Failed to send voice message: {e}")
             raise RuntimeError(f"Telegram error: {e}")
 
     async def get_chat(self, chat_id: int) -> Optional[TelegramChat]:
@@ -201,7 +240,7 @@ class TelegramClient:
             tc = self._convert_chat(chat)
             self._chat_cache[chat_id] = tc
             return tc
-        except TDLibError:
+        except AioTDLibError:
             return None
 
     async def get_user(self, user_id: int) -> Optional[TelegramUser]:
@@ -215,7 +254,7 @@ class TelegramClient:
             tu = self._convert_user(user)
             self._user_cache[user_id] = tu
             return tu
-        except TDLibError:
+        except AioTDLibError:
             return None
 
     async def get_chat_history(
@@ -224,20 +263,21 @@ class TelegramClient:
         limit: int = 30,
         from_message_id: int = 0,
     ) -> List[TelegramMessage]:
-        """Get chat message history."""
+        """Get chat message history (most recent first)."""
         if not self._client:
             return []
         try:
-            # Use get_chat_history
-            messages = await self._client.get_chat_history(
+            messages: List[TelegramMessage] = []
+            async for msg in self._client.iter_chat_history(
                 chat_id=chat_id,
                 from_message_id=from_message_id,
-                offset=0,
                 limit=limit,
-                only_local=False,
-            )
-            return [self._convert_message(m) for m in messages]
-        except TDLibError as e:
+            ):
+                messages.append(self._convert_message(msg))
+                if len(messages) >= limit:
+                    break
+            return messages
+        except AioTDLibError as e:
             logger.error(f"Failed to get chat history: {e}")
             return []
 
@@ -246,8 +286,8 @@ class TelegramClient:
         if not self._client:
             return
         try:
-            await self._client.open_chat(chat_id=chat_id)
-        except TDLibError as e:
+            await self._client.api.open_chat(chat_id=chat_id)
+        except AioTDLibError as e:
             logger.error(f"Failed to open chat: {e}")
 
     async def close_chat(self, chat_id: int) -> None:
@@ -255,21 +295,21 @@ class TelegramClient:
         if not self._client:
             return
         try:
-            await self._client.close_chat(chat_id=chat_id)
-        except TDLibError as e:
+            await self._client.api.close_chat(chat_id=chat_id)
+        except AioTDLibError as e:
             logger.error(f"Failed to close chat: {e}")
 
     async def view_messages(self, chat_id: int, message_ids: List[int]) -> None:
         """Mark messages as viewed."""
-        if not self._client:
+        if not self._client or not message_ids:
             return
         try:
-            await self._client.view_messages(
+            await self._client.api.view_messages(
                 chat_id=chat_id,
                 message_ids=message_ids,
-                source=None,
+                force_read=True,
             )
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to view messages: {e}")
 
     async def react_with_emoji(self, chat_id: int, message_id: int, emoji: str) -> None:
@@ -277,13 +317,14 @@ class TelegramClient:
         if not self._client:
             return
         try:
-            await self._client.set_message_reaction(
+            await self._client.api.add_message_reaction(
                 chat_id=chat_id,
                 message_id=message_id,
-                reaction=self._client.api.reaction_type_emoji(emoji=emoji),
+                reaction_type=td.ReactionTypeEmoji(emoji=emoji),
                 is_big=False,
+                update_recent_reactions=False,
             )
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to react: {e}")
 
     async def forward_message(
@@ -297,12 +338,11 @@ class TelegramClient:
             return
         try:
             await self._client.forward_messages(
-                chat_id=to_chat_id,
                 from_chat_id=from_chat_id,
+                chat_id=to_chat_id,
                 message_ids=[message_id],
-                options=None,
             )
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to forward message: {e}")
 
     async def edit_message_text(
@@ -315,16 +355,12 @@ class TelegramClient:
         if not self._client:
             return
         try:
-            input_text = self._client.api.input_message_text(
-                text=new_text,
-                parse_mode=self._client.api.parse_mode_html(),
-            )
-            await self._client.edit_message_text(
+            await self._client.edit_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                input_message_content=input_text,
+                text=new_text,
             )
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to edit message: {e}")
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:
@@ -332,12 +368,12 @@ class TelegramClient:
         if not self._client:
             return
         try:
-            await self._client.delete_messages(
+            await self._client.api.delete_messages(
                 chat_id=chat_id,
                 message_ids=[message_id],
                 revoke=True,
             )
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to delete message: {e}")
 
     async def join_chat_by_link(self, invite_link: str) -> int:
@@ -345,9 +381,9 @@ class TelegramClient:
         if not self._client:
             raise RuntimeError("Client not initialized")
         try:
-            chat = await self._client.join_chat_by_invite_link(invite_link=invite_link)
+            chat = await self._client.api.join_chat_by_invite_link(invite_link=invite_link)
             return chat.id
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to join chat: {e}")
             raise RuntimeError(f"Failed to join: {e}")
 
@@ -356,26 +392,23 @@ class TelegramClient:
         if not self._client:
             return
         try:
-            await self._client.leave_chat(chat_id=chat_id)
-        except TDLibError as e:
+            await self._client.api.leave_chat(chat_id=chat_id)
+        except AioTDLibError as e:
             logger.error(f"Failed to leave chat: {e}")
 
     async def search_chats(self, query: str) -> List[TelegramChat]:
-        """ chats by name."""
+        """Search chats by name."""
         if not self._client:
             return []
         try:
-            result = await self._client.search_chats(
-                query=query,
-                limit=20,
-            )
+            result = await self._client.api.search_chats(query=query, limit=20)
             chats = []
             for chat_id in result.chat_ids:
                 chat = await self.get_chat(chat_id)
                 if chat:
                     chats.append(chat)
             return chats
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to search chats: {e}")
             return []
 
@@ -385,241 +418,351 @@ class TelegramClient:
         query: str = "",
         limit: int = 10,
     ) -> List[TelegramMessage]:
-        """ messages in a chat or globally."""
+        """Search messages in a chat, or globally if chat_id is omitted."""
         if not self._client:
             return []
         try:
-            # Use search_messages
-            result = await self._client.search_messages(
-                chat_list=None,  # All chats
-                query=query,
-                offset=0,
-                limit=limit,
-                filter=None,
-                message_thread_id=0,
-            ) if chat_id is None else await self._client.search_messages(
-                chat_list=self._client.api.chat_list_main(),  # Actually we need to filter by chat_id manually
-                query=query,
-                offset=0,
-                limit=limit,
-                filter=None,
-                message_thread_id=0,
-            )
-            # Need to filter by chat_id if provided
-            messages = []
-            for msg in result.messages:
-                if chat_id is not None and msg.chat_id != chat_id:
-                    continue
-                messages.append(self._convert_message(msg))
-            return messages
-        except TDLibError as e:
+            if chat_id is not None:
+                result = await self._client.api.search_chat_messages(
+                    chat_id=chat_id,
+                    query=query,
+                    from_message_id=0,
+                    offset=0,
+                    limit=limit,
+                )
+                messages = result.messages
+            else:
+                result = await self._client.api.search_messages(
+                    query=query,
+                    offset="",
+                    limit=limit,
+                )
+                messages = result.messages
+            return [self._convert_message(m) for m in messages]
+        except AioTDLibError as e:
             logger.error(f"Failed to search messages: {e}")
             return []
 
     async def get_chats(self, limit: int = 200) -> List[TelegramChat]:
-        """Get all chats."""
+        """Get all chats from the main chat list."""
         if not self._client:
             return []
         try:
-            result = await self._client.get_chats(
-                chat_list=self._client.api.chat_list_main(),
-                limit=limit,
-            )
-            chats = []
-            for chat_id in result.chat_ids:
-                chat = await self.get_chat(chat_id)
-                if chat:
-                    chats.append(chat)
-            return chats
-        except TDLibError as e:
+            chats = await self._client.get_main_list_chats(limit=limit)
+            result = []
+            for chat in chats:
+                tc = self._convert_chat(chat)
+                self._chat_cache[tc.id] = tc
+                result.append(tc)
+            return result
+        except AioTDLibError as e:
             logger.error(f"Failed to get chats: {e}")
             return []
 
     # ---------- Event handling ----------
 
-    def add_event_handler(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+    def add_event_handler(self, callback: Callable[[Dict[str, Any]], Any]) -> None:
         """Register a callback for incoming events."""
         self._callbacks.append(callback)
 
-    async def _handle_update(self, update: Update) -> None:
+    async def _handle_update(self, client: "Client", update: Any) -> None:
         """Handle TDLib updates and emit events."""
-        # Convert to dict for compatibility
         event = self._convert_update(update)
+        if event is None:
+            return
         for cb in self._callbacks:
             try:
-                cb(event)
+                result = cb(event)
+                if asyncio.iscoroutine(result):
+                    await result
             except Exception as e:
                 logger.error(f"Error in event callback: {e}")
 
-    def _convert_update(self, update: Update) -> Dict[str, Any]:
-        """Convert a TDLib update to a dict."""
-        if isinstance(update, UpdateNewMessage):
+    def _convert_update(self, update: Any) -> Optional[Dict[str, Any]]:
+        """Convert a TDLib update to a dict. Returns None for uninteresting updates."""
+        if isinstance(update, td.UpdateNewMessage):
             msg = self._convert_message(update.message)
             return {
                 "type": "updateNewMessage",
                 "message": msg,
                 "chat_id": msg.chat_id,
             }
-        elif isinstance(update, UpdateChat):
-            return {
-                "type": "updateChat",
-                "chat_id": update.chat.id,
-                "chat": self._convert_chat(update.chat),
-            }
-        elif isinstance(update, UpdateUser):
+        elif isinstance(update, td.UpdateUser):
             return {
                 "type": "updateUser",
                 "user": self._convert_user(update.user),
             }
-        else:
-            return {
-                "type": "unknown",
-                "update": str(update),
-            }
+        elif isinstance(update, (td.UpdateChatLastMessage, td.UpdateChatPosition, td.UpdateChatReadInbox)):
+            chat_id = getattr(update, "chat_id", None)
+            if chat_id is not None:
+                # Invalidate cache so subsequent get_chat() re-fetches fresh data.
+                self._chat_cache.pop(chat_id, None)
+            return {"type": "updateChat", "chat_id": chat_id}
+        return None
 
     # ---------- Conversion helpers ----------
 
-    def _convert_message(self, msg: Message) -> TelegramMessage:
+    def _convert_message(self, msg: Any) -> TelegramMessage:
         """Convert TDLib Message to internal TelegramMessage."""
-        # Extract text
         content = ""
-        if msg.content:
-            if hasattr(msg.content, "text"):
-                content = msg.content.text or ""
-            elif hasattr(msg.content, "caption"):
-                content = msg.content.caption or ""
-        # Determine sender
+        media: Optional[Dict[str, Any]] = None
+        if msg.content is not None:
+            text_field = getattr(msg.content, "text", None)
+            caption_field = getattr(msg.content, "caption", None)
+            if text_field is not None and hasattr(text_field, "text"):
+                content = text_field.text or ""
+            elif caption_field is not None and hasattr(caption_field, "text"):
+                content = caption_field.text or ""
+
+            if isinstance(msg.content, td.MessageVoiceNote):
+                voice_note = msg.content.voice_note
+                media = {
+                    "type": "voice",
+                    "file_id": voice_note.voice.id,
+                    "duration": voice_note.duration,
+                }
+            elif isinstance(msg.content, td.MessagePhoto):
+                sizes = msg.content.photo.sizes or []
+                if sizes:
+                    largest = max(sizes, key=lambda s: s.width * s.height)
+                    media = {"type": "photo", "file_id": largest.photo.id}
+
         sender_id = 0
-        if msg.sender_id:
-            if isinstance(msg.sender_id, MessageSenderUser):
-                sender_id = msg.sender_id.user_id
-        is_outgoing = (sender_id == self._my_id)
+        if isinstance(msg.sender_id, td.MessageSenderUser):
+            sender_id = msg.sender_id.user_id
+        elif isinstance(msg.sender_id, td.MessageSenderChat):
+            sender_id = msg.sender_id.chat_id
+
+        reply_to_message_id = None
+        if msg.reply_to is not None and hasattr(msg.reply_to, "message_id"):
+            reply_to_message_id = msg.reply_to.message_id
+
         return TelegramMessage(
             id=msg.id,
             chat_id=msg.chat_id,
             sender_id=sender_id,
             date=msg.date,
             content=content,
-            is_outgoing=is_outgoing,
-            reply_to_message_id=msg.reply_to_message_id,
-            media=None,  # simplified
+            is_outgoing=bool(getattr(msg, "is_outgoing", False)),
+            reply_to_message_id=reply_to_message_id,
+            media=media,
         )
 
-    def _convert_chat(self, chat: Chat) -> TelegramChat:
+    def _convert_chat(self, chat: Any) -> TelegramChat:
         """Convert TDLib Chat to internal TelegramChat."""
-        # Determine type
         chat_type = "private"
-        if chat.type:
-            if hasattr(chat.type, "class_name"):
-                class_name = chat.type.class_name
-                if class_name == "chatTypePrivate":
-                    chat_type = "private"
-                elif class_name == "chatTypeBasicGroup":
-                    chat_type = "group"
-                elif class_name == "chatTypeSupergroup":
-                    # Check if channel
-                    if hasattr(chat.type, "is_channel") and chat.type.is_channel:
-                        chat_type = "channel"
-                    else:
-                        chat_type = "supergroup"
-        # Check pinned
+        chat_type_obj = getattr(chat, "type_", None)
+        if isinstance(chat_type_obj, td.ChatTypePrivate):
+            chat_type = "private"
+        elif isinstance(chat_type_obj, td.ChatTypeBasicGroup):
+            chat_type = "group"
+        elif isinstance(chat_type_obj, td.ChatTypeSupergroup):
+            chat_type = "channel" if chat_type_obj.is_channel else "supergroup"
+        elif isinstance(chat_type_obj, td.ChatTypeSecret):
+            chat_type = "private"
+
         is_pinned = False
-        if chat.positions:
-            for pos in chat.positions:
-                if pos.is_pinned:
-                    is_pinned = True
-                    break
+        for pos in (chat.positions or []):
+            if pos.is_pinned:
+                is_pinned = True
+                break
+
         return TelegramChat(
             id=chat.id,
             title=chat.title or "",
             type=chat_type,
             unread_count=chat.unread_count or 0,
             is_pinned=is_pinned,
-            is_member=True,  # we'll check membership later
+            is_member=True,  # membership state isn't exposed on Chat directly
             last_message=self._convert_message(chat.last_message) if chat.last_message else None,
         )
 
-    def _convert_user(self, user) -> TelegramUser:
+    def _convert_user(self, user: Any) -> TelegramUser:
         """Convert TDLib User to internal TelegramUser."""
+        username = ""
+        usernames = getattr(user, "usernames", None)
+        if usernames is not None and getattr(usernames, "active_usernames", None):
+            username = usernames.active_usernames[0]
         return TelegramUser(
             id=user.id,
             first_name=user.first_name or "",
             last_name=user.last_name or "",
-            username=user.username or "",
+            username=username,
             phone_number=user.phone_number or "",
         )
 
     # ---------- Additional features ----------
+
+    async def get_contact_ids(self) -> List[int]:
+        """Return the user IDs of all Telegram contacts."""
+        if not self._client:
+            return []
+        try:
+            result = await self._client.api.get_contacts()
+            return list(result.user_ids)
+        except AioTDLibError as e:
+            logger.error(f"Failed to get contacts: {e}")
+            return []
 
     async def send_typing(self, chat_id: int) -> None:
         """Send typing action."""
         if not self._client:
             return
         try:
-            await self._client.send_chat_action(
+            await self._client.api.send_chat_action(
                 chat_id=chat_id,
-                action=self._client.api.chat_action_typing(),
+                business_connection_id="",
+                action=td.ChatActionTyping(),
             )
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.debug(f"Failed to send typing: {e}")
 
     async def send_sticker(self, chat_id: int, sticker_file_id: str) -> None:
-        """Send a sticker by file ID."""
+        """Send a sticker by file ID (or local path)."""
         if not self._client:
             return
         try:
-            # Get sticker file
-            file = await self._client.get_file(file_id=sticker_file_id)
-            input_file = self._client.api.input_file_id(id=file.id)
-            sticker_input = self._client.api.input_message_sticker(
-                sticker=input_file,
-                width=512,
-                height=512,
-                emoji=None,
-            )
-            await self._client.send_message(
-                chat_id=chat_id,
-                input_message_content=sticker_input,
-            )
-        except TDLibError as e:
+            await self._client.send_sticker(chat_id=chat_id, sticker=sticker_file_id)
+        except AioTDLibError as e:
             logger.error(f"Failed to send sticker: {e}")
 
     async def get_stickers(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get favorite stickers."""
+        """Get favorite/recently-used stickers."""
         if not self._client:
             return []
         try:
-            stickers = await self._client.get_stickers(
-                sticker_type=self._client.api.sticker_type_regular(),
+            stickers = await self._client.api.get_stickers(
+                sticker_type=td.StickerTypeRegular(),
                 limit=limit,
+                chat_id=0,
+                query="",
             )
-            return [
-                {
+            result = []
+            for s in stickers.stickers:
+                file_id = None
+                if s.sticker and s.sticker.remote:
+                    file_id = s.sticker.remote.id
+                result.append({
                     "id": s.id,
                     "emoji": s.emoji,
-                    "file_id": s.sticker.file.id if s.sticker and s.sticker.file else None,
-                }
-                for s in stickers.stickers
-            ]
-        except TDLibError as e:
+                    "file_id": file_id,
+                })
+            return result
+        except AioTDLibError as e:
             logger.error(f"Failed to get stickers: {e}")
             return []
 
     async def save_sticker(self, sticker_file_id: str) -> bool:
-        """Save a sticker to favorites."""
+        """Save a sticker (by its remote file_id) to favorites."""
         if not self._client:
             return False
         try:
-            # Get sticker
-            sticker = await self._client.get_sticker(file_id=sticker_file_id)
-            await self._client.add_sticker_to_set(
-                sticker_set_name=None,  # add to favorite
-                sticker=sticker,
+            await self._client.api.add_favorite_sticker(
+                sticker=td.InputFileRemote(id=sticker_file_id),
             )
             return True
-        except TDLibError as e:
+        except AioTDLibError as e:
             logger.error(f"Failed to save sticker: {e}")
             return False
+
+    async def ban_chat_member(
+        self,
+        chat_id: int,
+        user_id: int,
+        banned_until_date: int = 0,
+        revoke_messages: bool = False,
+    ) -> bool:
+        """Ban a user from a group/supergroup/channel."""
+        if not self._client:
+            return False
+        try:
+            await self._client.api.ban_chat_member(
+                chat_id=chat_id,
+                member_id=td.MessageSenderUser(user_id=user_id),
+                banned_until_date=banned_until_date,
+                revoke_messages=revoke_messages,
+            )
+            return True
+        except AioTDLibError as e:
+            logger.error(f"Failed to ban user {user_id} in chat {chat_id}: {e}")
+            return False
+
+    async def set_member_tag(self, chat_id: int, user_id: int, tag: str) -> bool:
+        """Best-effort mapping of a free-form 'tag' onto a real TDLib chat member status.
+
+        `tag` in {"admin", "moderator"} promotes to administrator with a
+        conservative set of rights; anything else demotes back to a plain
+        member.
+        """
+        if not self._client:
+            return False
+        try:
+            if tag.lower() in ("admin", "moderator", "administrator"):
+                status = td.ChatMemberStatusAdministrator(
+                    rights=td.ChatAdministratorRights(
+                        can_manage_chat=True,
+                        can_change_info=False,
+                        can_post_messages=False,
+                        can_edit_messages=False,
+                        can_delete_messages=True,
+                        can_invite_users=True,
+                        can_restrict_members=True,
+                        can_pin_messages=True,
+                        can_manage_topics=False,
+                        can_promote_members=False,
+                        can_manage_video_chats=False,
+                        can_post_stories=False,
+                        can_edit_stories=False,
+                        can_delete_stories=False,
+                        is_anonymous=False,
+                    ),
+                    custom_title=tag,
+                    can_be_edited=True,
+                )
+            else:
+                status = td.ChatMemberStatusMember(member_until_date=0)
+            await self._client.api.set_chat_member_status(
+                chat_id=chat_id,
+                member_id=td.MessageSenderUser(user_id=user_id),
+                status=status,
+            )
+            return True
+        except AioTDLibError as e:
+            logger.error(f"Failed to set tag for user {user_id} in chat {chat_id}: {e}")
+            return False
+
+    async def get_file_path(self, file_id: int) -> Optional[str]:
+        """Resolve a TDLib numeric file_id to a local downloaded file path, if any."""
+        if not self._client:
+            return None
+        try:
+            file = await self._client.api.get_file(file_id=file_id)
+            if file.local and file.local.is_downloading_completed:
+                return file.local.path
+            return None
+        except AioTDLibError as e:
+            logger.error(f"Failed to get file: {e}")
+            return None
+
+    async def download_file_bytes(self, file_id: int) -> Optional[bytes]:
+        """Download a file (e.g. a voice note) by its numeric file_id and
+        return its raw bytes once the download completes."""
+        if not self._client:
+            return None
+        try:
+            file = await self._client.api.download_file(
+                file_id=file_id,
+                priority=1,
+                offset=0,
+                limit=0,
+                synchronous=True,
+            )
+            if file.local and file.local.is_downloading_completed and file.local.path:
+                return Path(file.local.path).read_bytes()
+            return None
+        except (AioTDLibError, OSError) as e:
+            logger.error(f"Failed to download file {file_id}: {e}")
+            return None
 
 
 # Singleton instance

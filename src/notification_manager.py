@@ -86,7 +86,9 @@ class NotificationManager:
             # Call handlers
             for handler in self._handlers:
                 try:
-                    handler(notification)
+                    result = handler(notification)
+                    if asyncio.iscoroutine(result):
+                        await result
                 except Exception as e:
                     logger.error(f"Error in notification handler: {e}")
             return notification

@@ -158,3 +158,14 @@ pcm_sample_rate = 24000
 # --- Прокси-сервер (OpenAI-совместимый) / Proxy server (OpenAI-compatible) ---
 [capabilities.proxy]
 enabled = false
+# Локальный порт, на котором слушает прокси-сервер / Local port the proxy server listens on
+port = 10434
+
+# Необязательно: апстрим для проксируемых запросов. Если не указан, используется тот же [llm], что и для основного персонажа.
+# Optional: upstream used for proxied requests. If omitted, falls back to the same [llm] used by the main character.
+[capabilities.proxy.upstream]
+model = ""
+[capabilities.proxy.upstream.endpoint]
+base_url = ""
+bearer_key = ""
+
