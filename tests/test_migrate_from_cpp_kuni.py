@@ -117,6 +117,34 @@ def test_migrate_working_memory_missing_source_is_noop(tmp_path):
     assert ok is False
 
 
+def test_migrate_working_memory_missing_source_prints_reason(tmp_path, capsys):
+    migrate_working_memory(tmp_path / "does_not_exist.md", tmp_path / "out.json", dry_run=False)
+    out = capsys.readouterr().out
+    assert "not found" in out
+
+
+def test_migrate_working_memory_empty_file_prints_reason(tmp_path, capsys):
+    source_md = tmp_path / "working_memory.md"
+    source_md.write_text("   \n  ", encoding="utf-8")
+    ok = migrate_working_memory(source_md, tmp_path / "out.json", dry_run=False)
+    assert ok is False
+    assert "empty" in capsys.readouterr().out
+
+
+def test_migrate_diary_missing_source_dir_prints_reason(tmp_path, capsys):
+    count = migrate_diary(tmp_path / "does_not_exist", tmp_path / "dest", strip_embeddings=False, dry_run=False)
+    assert count == 0
+    assert "not found" in capsys.readouterr().out
+
+
+def test_migrate_diary_empty_source_dir_prints_reason(tmp_path, capsys):
+    source = tmp_path / "empty_diary"
+    source.mkdir()
+    count = migrate_diary(source, tmp_path / "dest", strip_embeddings=False, dry_run=False)
+    assert count == 0
+    assert "no .md entries" in capsys.readouterr().out
+
+
 def test_migrate_prompts_extracts_character_files_and_mirrors_rest(tmp_path):
     source_prompts = tmp_path / "prompts"
     source_prompts.mkdir()
