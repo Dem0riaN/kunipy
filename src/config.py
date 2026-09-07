@@ -150,6 +150,7 @@ class Config:
         cfg.telegram_api_id = general.get("telegram_api_id", cfg.telegram_api_id)
         cfg.telegram_api_hash = general.get("telegram_api_hash", cfg.telegram_api_hash)
         cfg.telegram_enabled = general.get("telegram_enabled", cfg.telegram_enabled)
+        cfg.telegram_phone = general.get("telegram_phone", ...)
         if "llm" in general:
             llm = general["llm"]
             cfg.llm.model = llm.get("model", cfg.llm.model)
