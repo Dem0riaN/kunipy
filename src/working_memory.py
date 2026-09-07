@@ -90,6 +90,40 @@ class WorkingMemory:
         else:
             self.set(key, value)
 
+    def save_to_file(self, path: str = "data/working_memory.json") -> None:
+        """Persist all non-expired entries to disk as JSON."""
+        import json
+        from pathlib import Path
+
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            key: {"value": entry.value, "timestamp": entry.timestamp, "ttl": entry.ttl}
+            for key, entry in self._store.items()
+        }
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_from_file(self, path: str = "data/working_memory.json") -> None:
+        """Load entries previously written by save_to_file(), skipping expired ones."""
+        import json
+        from pathlib import Path
+
+        p = Path(path)
+        if not p.exists():
+            return
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load working memory from {path}: {e}")
+            return
+        now = time.time()
+        for key, raw in data.items():
+            ttl = raw.get("ttl")
+            timestamp = raw.get("timestamp", now)
+            if ttl is not None and (now - timestamp) > ttl:
+                continue  # expired while the process was down
+            self._store[key] = WorkingMemoryEntry(key=key, value=raw.get("value"), timestamp=timestamp, ttl=ttl)
+
 
 # Singleton instance
 _memory: Optional[WorkingMemory] = None

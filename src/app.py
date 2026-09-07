@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .config import get_config, load_config
+from .config import LockdownMode, get_config, load_config
 from .diary import Diary
 from .notification_manager import Notification, NotificationManager, get_notification_manager
 from .openai_chat import OpenAIChat
@@ -42,6 +42,7 @@ class App:
         self._tasks: List[asyncio.Task] = []
         self._current_chat_id: Optional[int] = None
         self._proactive_task: Optional[asyncio.Task] = None
+        self._sleep_task: Optional[asyncio.Task] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -88,6 +89,10 @@ class App:
         """Start the application."""
         self._running = True
 
+        # Restore short-term "things to remember" across restarts.
+        from .working_memory import get_working_memory
+        get_working_memory().load_from_file()
+
         # Start notification manager (this runs the queue loop)
         self.notification_manager.start(len(self.workers))
 
@@ -104,6 +109,19 @@ class App:
         # Start proxy server if enabled
         if self.config.proxy_enabled:
             await self._start_proxy_server()
+
+        # Start Prometheus metrics endpoint (llm_usage_* counters)
+        if self.config.metrics_enabled:
+            from .metrics import start_metrics_server
+            metrics_task = asyncio.create_task(
+                start_metrics_server(self.config.metrics_port), name="metrics-server"
+            )
+            self._tasks.append(metrics_task)
+
+        # Nightly diary sleep consolidation ("Kuni requires sleep, as a human does")
+        if self.diary:
+            self._sleep_task = asyncio.create_task(self._sleep_consolidation_loop())
+            self._tasks.append(self._sleep_task)
 
         logger.info("Kunipy is running")
 
@@ -125,11 +143,23 @@ class App:
         self._running = False
         logger.info("Stopping...")
 
+        # Persist short-term "things to remember" across restarts.
+        from .working_memory import get_working_memory
+        get_working_memory().save_to_file()
+
         # Cancel proactive loop
         if self._proactive_task and not self._proactive_task.done():
             self._proactive_task.cancel()
             try:
                 await self._proactive_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel sleep consolidation loop
+        if self._sleep_task and not self._sleep_task.done():
+            self._sleep_task.cancel()
+            try:
+                await self._sleep_task
             except asyncio.CancelledError:
                 pass
 
@@ -146,10 +176,12 @@ class App:
             if not task.done():
                 task.cancel()
 
-        # Dump remaining context to diary
+        # Dump remaining context to diary (per-chat, since Worker.temporary_context
+        # is now keyed by chat_id -- see worker.py).
         for worker in self.workers:
-            await self.diary_dump_messages(worker.temporary_context)
-            worker.temporary_context = []
+            for chat_id, messages in worker.temporary_context.items():
+                await self.diary_dump_messages(messages)
+            worker.temporary_context = {}
 
         logger.info("Stopped")
 
@@ -181,6 +213,28 @@ class App:
         # Check lockdown mode
         if not await self._is_accessible(msg.chat_id):
             return
+
+        # A separate, usually stricter filter for which accessible chats
+        # actually generate a notification (e.g., stay joined to a group
+        # but only get pinged for papik's own messages there).
+        if not await self._check_lockdown(msg.chat_id, self.config.chat_notification_filter):
+            return
+
+        # Occasionally skip responding at all, to seem less robotically
+        # attentive -- except for papik, who should always get through.
+        if msg.sender_id != self.config.papik_chat_id and random.random() < self.config.suggest_ignore_chance:
+            logger.debug(f"Randomly ignoring message in chat {msg.chat_id} (suggest_ignore_chance)")
+            return
+
+        # Transcribe voice messages, if a speech-to-text endpoint is configured.
+        if msg.media and msg.media.get("type") == "voice" and not msg.content:
+            msg.content = await self._transcribe_voice_message(msg)
+
+        # Describe incoming photos, if vision is enabled/configured.
+        if msg.media and msg.media.get("type") == "photo":
+            description = await self._describe_photo_message(msg)
+            if description:
+                msg.content = f"{msg.content}\n[photo] {description}".strip()
 
         # Build notification string
         notification_text = await self._format_message_notification(msg)
@@ -256,17 +310,70 @@ class App:
                 f"You don't have any chat open. Use #open tool to open the chat"
             )
 
+    async def _transcribe_voice_message(self, msg: TelegramMessage) -> str:
+        """Download and transcribe a voice message, if a speech-to-text
+        endpoint is configured. Returns an empty string on failure/disabled."""
+        if not self.telegram or not self.openai or not msg.media:
+            return ""
+        if not self.config.capability_hearing or not self.config.llm_audio_to_text.endpoint.base_url:
+            logger.debug("Voice message hearing disabled or unconfigured, skipping transcription")
+            return ""
+        file_id = msg.media.get("file_id")
+        if not file_id:
+            return ""
+        try:
+            audio_bytes = await self.telegram.download_file_bytes(file_id)
+            if not audio_bytes:
+                return ""
+            text = await self.openai.transcribe_audio(audio_bytes, format="ogg")
+            return f"[voice message] {text}" if text else ""
+        except Exception as e:
+            logger.error(f"Failed to transcribe voice message: {e}")
+            return ""
+
+    async def _describe_photo_message(self, msg: TelegramMessage) -> str:
+        """Download and describe an incoming photo via a vision-capable
+        model, if `capabilities.vision` is enabled and configured. Returns
+        an empty string on failure/disabled."""
+        if not self.telegram or not self.openai or not msg.media:
+            return ""
+        if not self.config.capability_vision or not self.config.llm_image_to_text.endpoint.base_url:
+            logger.debug("Vision disabled or unconfigured, skipping photo description")
+            return ""
+        file_id = msg.media.get("file_id")
+        if not file_id:
+            return ""
+        try:
+            image_bytes = await self.telegram.download_file_bytes(file_id)
+            if not image_bytes:
+                return ""
+            return await self.openai.describe_image(image_bytes, mime_type="image/jpeg")
+        except Exception as e:
+            logger.error(f"Failed to describe photo message: {e}")
+            return ""
+
     async def _is_accessible(self, chat_id: int) -> bool:
-        """Check if chat is accessible under lockdown mode."""
-        config = get_config()
-        if config.lockdown.value == "none":
+        """Check if chat is accessible under the main lockdown mode."""
+        return await self._check_lockdown(chat_id, get_config().lockdown)
+
+    async def _check_lockdown(self, chat_id: int, mode: LockdownMode) -> bool:
+        """Evaluate a LockdownMode against a chat_id. Shared by `_is_accessible`
+        (can we interact at all) and `chat_notification_filter` (should we
+        even generate a notification for this message)."""
+        if mode.value == "none":
             return True
-        if config.lockdown.value == "papik_only":
-            return chat_id == config.papik_chat_id
-        if config.lockdown.value == "contacts_only":
-            # Check if user is in contacts
-            # For now, we assume all accessible, but in real impl we'd check contact list
-            return True
+        if mode.value == "papik_only":
+            return chat_id == self.config.papik_chat_id
+        if mode.value == "contacts_only":
+            if not self.telegram:
+                return True
+            chat = await self.telegram.get_chat(chat_id)
+            if not chat or chat.type != "private":
+                # Contact filtering only makes sense for 1:1 chats; groups
+                # and channels the account already joined stay accessible.
+                return True
+            contact_ids = await self.telegram.get_contact_ids()
+            return chat_id in contact_ids
         return True
 
     async def _open_chat(self, chat_id: int) -> str:
@@ -320,6 +427,35 @@ class App:
                     await self._handle_new_message(hist[0])
 
     # ---------- Proactive messaging ----------
+
+    async def _sleep_consolidation_loop(self) -> None:
+        """Background loop that runs diary sleep consolidation once a day,
+        preferring a quiet nighttime hour (mirrors the original kuni's
+        "Kuni requires sleep, as a human does" behavior)."""
+        if not self.diary:
+            return
+
+        NIGHT_HOUR = 4  # run around 4 AM local time
+
+        logger.info("Sleep consolidation loop started")
+        while self._running:
+            try:
+                now = datetime.now()
+                next_run = now.replace(hour=NIGHT_HOUR, minute=0, second=0, microsecond=0)
+                if next_run <= now:
+                    next_run += timedelta(days=1)
+                await asyncio.sleep((next_run - now).total_seconds())
+
+                if not self._running:
+                    break
+
+                logger.info("Starting nightly diary sleep consolidation")
+                await self.diary.sleep_consolidation()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.exception(f"Sleep consolidation loop error: {e}")
+                await asyncio.sleep(3600)  # back off an hour on unexpected errors
 
     async def _proactive_loop(self) -> None:
         """Background loop for proactive messages (writing first).
@@ -423,6 +559,16 @@ class App:
 
             candidates.append(chat)
 
+            # Respect `can_write_to_a_new_person`: unless explicitly allowed,
+            # don't proactively message someone we've never personally sent
+            # a message to before (a fresh contact/chat we only received
+            # messages from or just joined).
+            if not self.config.can_write_to_a_new_person and chat.type == "private":
+                history = await self.telegram.get_chat_history(chat.id, limit=20)
+                if not any(m.is_outgoing for m in history):
+                    candidates.pop()
+                    continue
+
         # Prioritize: pinned chats first, then owner's chat, then others
         def priority(c: TelegramChat) -> tuple[int, int]:
             p = 0
@@ -504,9 +650,21 @@ Message:"""
     # ---------- Proxy server ----------
 
     async def _start_proxy_server(self) -> None:
-        """Start the OpenAI-compatible proxy server."""
-        # TODO: Implement FastAPI proxy server
-        logger.info("Proxy server not yet implemented")
+        """Start the OpenAI-compatible proxy server as a background task."""
+        import uvicorn
+        from .proxy_server import create_proxy_app
+
+        fastapi_app = create_proxy_app(self.diary)
+        uvicorn_config = uvicorn.Config(
+            fastapi_app,
+            host="0.0.0.0",
+            port=self.config.proxy_port,
+            log_level="warning",
+        )
+        server = uvicorn.Server(uvicorn_config)
+        task = asyncio.create_task(server.serve(), name="proxy-server")
+        self._tasks.append(task)
+        logger.info(f"Proxy server listening on http://0.0.0.0:{self.config.proxy_port}/v1")
 
     # ---------- Diary dump ----------
 

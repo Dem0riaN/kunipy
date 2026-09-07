@@ -24,15 +24,18 @@ class ImageGenerator:
 
     def __init__(self, endpoint: Optional[str] = None, checkpoint: Optional[str] = None):
         config = get_config()
-        self.enabled = config.capabilities.take_photo.get("enabled", False)
-        sd_config = config.capabilities.take_photo.get("sd", {})
-        self.endpoint = endpoint or sd_config.get("endpoint", {}).get("base_url", "http://localhost:7860/")
-        self.checkpoint = checkpoint or sd_config.get("checkpoint", "novaAnimeXL_ilV170.safetensors")
+        self.enabled = config.capability_take_photo
+        self.endpoint = endpoint or config.sd_endpoint.base_url or "http://localhost:7860/"
+        self.checkpoint = checkpoint or config.sd_checkpoint
+        self._bearer_key = config.sd_endpoint.bearer_key
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            headers = {}
+            if self._bearer_key:
+                headers["Authorization"] = f"Bearer {self._bearer_key}"
+            self._session = aiohttp.ClientSession(headers=headers)
         return self._session
 
     async def generate(
@@ -86,6 +89,40 @@ class ImageGenerator:
         except Exception as e:
             logger.error(f"Image generation failed: {e}")
             return None
+
+    async def generate_and_save(
+        self,
+        prompt: str,
+        negative_prompt: str = "",
+        width: int = 512,
+        height: int = 512,
+        steps: int = 20,
+        cfg_scale: float = 7.0,
+        seed: Optional[int] = None,
+        output_dir: str = "data/generated_images",
+    ) -> Optional[str]:
+        """Generate an image and save it to disk. Returns the local file path, or None on failure."""
+        data = await self.generate(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            seed=seed,
+        )
+        if not data:
+            return None
+
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        import time
+        import re
+        safe_prompt = re.sub(r"[^a-zA-Z0-9_-]+", "_", prompt[:40]).strip("_") or "image"
+        filename = f"{int(time.time() * 1000)}_{safe_prompt}.png"
+        path = out_dir / filename
+        path.write_bytes(data)
+        return str(path)
 
     def _mock_image(self, prompt: str) -> bytes:
         """Return a mock image (a small placeholder)."""

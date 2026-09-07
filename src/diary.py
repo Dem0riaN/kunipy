@@ -191,7 +191,7 @@ class Diary:
         min_relatedness: Optional[float] = None,
         filter_fn: Optional[Callable[[DiaryEntry], bool]] = None,
     ) -> List[tuple[DiaryEntry, float]]:
-        """ diary entries by embedding similarity."""
+        """Query diary entries by embedding similarity."""
         config = get_config()
         if min_relatedness is None:
             min_relatedness = config.diary_min_relatedness

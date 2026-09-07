@@ -75,6 +75,8 @@ class Config:
     diary_plagiarism_threshold: float = 0.97
     diary_min_relatedness: float = 0.80
     chat_max_history_length: int = 2000
+    metrics_enabled: bool = True
+    metrics_port: int = 9464
     llm_temperature: Optional[float] = 0.2
     llm_top_p: Optional[float] = None
     llm_top_k: Optional[float] = None
@@ -131,6 +133,9 @@ class Config:
 
     # proxy
     proxy_enabled: bool = False
+    proxy_port: int = 10434
+    # If empty, the proxy forwards to the same model/endpoint as `llm`.
+    proxy_upstream: EndpointAndModel = field(default_factory=EndpointAndModel)
 
     @classmethod
     def from_toml_dict(cls, data: dict[str, Any]) -> "Config":
@@ -169,6 +174,8 @@ class Config:
         cfg.diary_plagiarism_threshold = misc.get("diary_plagiarism_threshold", cfg.diary_plagiarism_threshold)
         cfg.diary_min_relatedness = misc.get("diary_min_relatedness", cfg.diary_min_relatedness)
         cfg.chat_max_history_length = misc.get("chat_max_history_length", cfg.chat_max_history_length)
+        cfg.metrics_enabled = misc.get("metrics_enabled", cfg.metrics_enabled)
+        cfg.metrics_port = misc.get("metrics_port", cfg.metrics_port)
         cfg.llm_temperature = misc.get("llm_temperature", cfg.llm_temperature)
         cfg.llm_top_p = misc.get("llm_top_p", cfg.llm_top_p)
         cfg.llm_top_k = misc.get("llm_top_k", cfg.llm_top_k)
@@ -234,7 +241,14 @@ class Config:
         cfg.record_voice_openai_format = openai_tts.get("response_format", cfg.record_voice_openai_format)
         cfg.record_voice_openai_pcm_sample_rate = openai_tts.get("pcm_sample_rate", cfg.record_voice_openai_pcm_sample_rate)
 
-        cfg.proxy_enabled = capabilities.get("proxy", {}).get("enabled", cfg.proxy_enabled)
+        proxy_cfg = capabilities.get("proxy", {})
+        cfg.proxy_enabled = proxy_cfg.get("enabled", cfg.proxy_enabled)
+        cfg.proxy_port = proxy_cfg.get("port", cfg.proxy_port)
+        upstream = proxy_cfg.get("upstream", {})
+        cfg.proxy_upstream.model = upstream.get("model", cfg.proxy_upstream.model)
+        if "endpoint" in upstream:
+            cfg.proxy_upstream.endpoint.base_url = upstream["endpoint"].get("base_url", cfg.proxy_upstream.endpoint.base_url)
+            cfg.proxy_upstream.endpoint.bearer_key = upstream["endpoint"].get("bearer_key", cfg.proxy_upstream.endpoint.bearer_key)
 
         return cfg
 
@@ -300,6 +314,8 @@ def save_config(cfg: Config, path: Path) -> None:
             "diary_plagiarism_threshold": cfg.diary_plagiarism_threshold,
             "diary_min_relatedness": cfg.diary_min_relatedness,
             "chat_max_history_length": cfg.chat_max_history_length,
+            "metrics_enabled": cfg.metrics_enabled,
+            "metrics_port": cfg.metrics_port,
             "llm_temperature": cfg.llm_temperature,
             "llm_top_p": cfg.llm_top_p,
             "llm_top_k": cfg.llm_top_k,
@@ -385,6 +401,14 @@ def save_config(cfg: Config, path: Path) -> None:
             },
             "proxy": {
                 "enabled": cfg.proxy_enabled,
+                "port": cfg.proxy_port,
+                "upstream": {
+                    "model": cfg.proxy_upstream.model,
+                    "endpoint": {
+                        "base_url": cfg.proxy_upstream.endpoint.base_url,
+                        "bearer_key": cfg.proxy_upstream.endpoint.bearer_key,
+                    },
+                },
             },
         },
     }

@@ -11,9 +11,13 @@ Provides the OpenAITools container and individual tool handlers for:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
+import random
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
+
+import aiohttp
 
 from .config import get_config
 from .diary import Diary
@@ -140,8 +144,25 @@ class OpenAITools:
 def create_send_telegram_message_tool(
     telegram: TelegramClient,
     chat: Optional[TelegramChat] = None,
+    recent_bot_messages: Optional[List[str]] = None,
 ) -> Tool:
     """Send a message to a Telegram chat."""
+
+    async def _handle(ctx: ToolContext) -> Any:
+        text = ctx.args["text"]
+        chat_id = ctx.args.get("chat_id") or (chat.id if chat else 0)
+
+        repeat_warning = _check_anti_repeat(text, recent_bot_messages)
+        if repeat_warning:
+            return repeat_warning
+
+        await _simulate_typing(telegram, chat_id, text)
+        return await telegram.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_to_message_id=ctx.args.get("reply_to"),
+        )
+
     return Tool(
         name="send_telegram_message",
         description="Send a message to the current or specified Telegram chat.",
@@ -154,12 +175,61 @@ def create_send_telegram_message_tool(
             },
             "required": ["text"],
         },
-        handler=lambda ctx: telegram.send_message(
-            chat_id=ctx.args.get("chat_id") or (chat.id if chat else 0),
-            text=ctx.args["text"],
-            reply_to_message_id=ctx.args.get("reply_to"),
-        ),
+        handler=_handle,
     )
+
+
+def _check_anti_repeat(text: str, recent_bot_messages: Optional[List[str]]) -> Optional[str]:
+    """Compare `text` against the bot's own recent messages in this chat and
+    return a rejection message (instead of sending) if it looks like a
+    near-duplicate of something already said.
+
+    Uses plain text similarity (difflib) rather than embeddings, trading a
+    bit of semantic precision for zero extra network round-trips on every
+    single message send.
+    """
+    if not recent_bot_messages or not text.strip():
+        return None
+
+    config = get_config()
+    history = recent_bot_messages[-config.anti_repeat_max_history:]
+    if not history:
+        return None
+
+    ratios = [difflib.SequenceMatcher(None, text, past).ratio() for past in history if past.strip()]
+    if not ratios:
+        return None
+
+    max_ratio = max(ratios)
+    avg_ratio = sum(ratios) / len(ratios)
+
+    if max_ratio >= config.anti_repeat_trigger_max or avg_ratio >= config.anti_repeat_trigger_avg:
+        return (
+            "Error: this message is too similar to something you already said recently in this chat "
+            f"(similarity={max_ratio:.2f}). Say something meaningfully different, or don't send anything."
+        )
+    return None
+
+
+async def _simulate_typing(telegram: TelegramClient, chat_id: int, text: str) -> None:
+    """Show a "typing..." indicator for a duration proportional to the
+    message length, so replies don't appear unnaturally instantly."""
+    if not chat_id or not text:
+        return
+    config = get_config()
+    min_wpm = max(config.typing_simulation_min_wpm, 1)
+    max_wpm = max(config.typing_simulation_max_wpm, min_wpm)
+    wpm = random.uniform(min_wpm, max_wpm)
+
+    word_count = max(len(text.split()), 1)
+    duration = min((word_count / wpm) * 60.0, 8.0)  # cap so long replies don't stall the chat forever
+
+    try:
+        await telegram.send_typing(chat_id)
+        if duration > 0.1:
+            await asyncio.sleep(duration)
+    except Exception as e:
+        logger.debug(f"Typing simulation failed (non-fatal): {e}")
 
 
 def create_get_telegram_chats_tool(
@@ -182,14 +252,14 @@ def create_get_telegram_chats_tool(
 def create_search_chats_tool(
     telegram: TelegramClient,
 ) -> Tool:
-    """ chats by name."""
+    """Search chats by name."""
     return Tool(
-        name="_chats",
-        description=" for chats by name or title.",
+        name="search_chats",
+        description="Search for chats by name or title.",
         parameters={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": " query string"},
+                "query": {"type": "string", "description": "Search query string"},
             },
             "required": ["query"],
         },
@@ -200,14 +270,14 @@ def create_search_chats_tool(
 def create_search_messages_tool(
     telegram: TelegramClient,
 ) -> Tool:
-    """ messages in a chat."""
+    """Search messages in a chat."""
     return Tool(
-        name="_messages",
-        description=" for messages in a specific chat or globally.",
+        name="search_messages",
+        description="Search for messages in a specific chat or globally.",
         parameters={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": " query string"},
+                "query": {"type": "string", "description": "Search query string"},
                 "chat_id": {"type": "integer", "description": "Optional: limit search to this chat"},
                 "limit": {"type": "integer", "description": "Maximum results", "default": 10},
             },
@@ -296,35 +366,54 @@ async def _handle_ask(
 
 def create_sticker_tools(
     telegram: TelegramClient,
+    chat: Optional[TelegramChat] = None,
 ) -> List[Tool]:
     """Create sticker-related tools."""
     tools = []
 
+    async def _sticker_send(ctx: ToolContext) -> str:
+        chat_id = ctx.args.get("chat_id") or (chat.id if chat else 0)
+        if not chat_id:
+            return "Error: no chat_id available to send the sticker to."
+        await telegram.send_sticker(chat_id, ctx.args["sticker"])
+        return f"Sticker {ctx.args['sticker']} sent."
+
     tools.append(Tool(
         name="sticker_send",
-        description="Send a sticker to the current chat.",
+        description="Send a sticker (by its Telegram file_id) to the current chat.",
         parameters={
             "type": "object",
             "properties": {
-                "sticker": {"type": "string", "description": "Sticker file ID or emoji description"},
+                "sticker": {"type": "string", "description": "Sticker file_id (see sticker_list)"},
+                "chat_id": {"type": "integer", "description": "Optional: target chat ID. Defaults to current chat."},
             },
             "required": ["sticker"],
         },
-        handler=lambda ctx: telegram.send_message(
-            chat_id=0,  # will be replaced with current chat
-            text=f"[Sticker: {ctx.args['sticker']}]",
-        ),
+        handler=_sticker_send,
     ))
+
+    async def _sticker_list(ctx: ToolContext) -> str:
+        stickers = await telegram.get_stickers(limit=ctx.args.get("limit", 20))
+        if not stickers:
+            return "You have no saved stickers yet."
+        lines = [f"{s['emoji'] or '?'} -> file_id={s['file_id']}" for s in stickers if s.get("file_id")]
+        return "Your stickers:\n" + "\n".join(lines) if lines else "You have no saved stickers yet."
 
     tools.append(Tool(
         name="sticker_list",
-        description="List your favorite stickers.",
+        description="List your favorite/recently used stickers.",
         parameters={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "limit": {"type": "integer", "description": "Maximum number of stickers to list", "default": 20},
+            },
         },
-        handler=lambda ctx: "You have no saved stickers yet.",
+        handler=_sticker_list,
     ))
+
+    async def _sticker_save(ctx: ToolContext) -> str:
+        ok = await telegram.save_sticker(ctx.args["sticker_id"])
+        return f"Sticker {ctx.args['sticker_id']} saved." if ok else f"Failed to save sticker {ctx.args['sticker_id']}."
 
     tools.append(Tool(
         name="sticker_save",
@@ -336,17 +425,39 @@ def create_sticker_tools(
             },
             "required": ["sticker_id"],
         },
-        handler=lambda ctx: f"Sticker {ctx.args['sticker_id']} saved.",
+        handler=_sticker_save,
     ))
 
     return tools
 
 
-def create_take_photo_tool() -> Tool:
-    """Generate an image using Stable Diffusion."""
+def create_take_photo_tool(
+    telegram: TelegramClient,
+    chat: Optional[TelegramChat] = None,
+) -> Tool:
+    """Generate an image using Stable Diffusion and send it to the chat."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        from .image_generator import get_image_generator
+
+        chat_id = ctx.args.get("chat_id") or (chat.id if chat else 0)
+        generator = get_image_generator()
+        path = await generator.generate_and_save(
+            prompt=ctx.args["prompt"],
+            negative_prompt=ctx.args.get("negative_prompt", ""),
+            width=ctx.args.get("width", 512),
+            height=ctx.args.get("height", 512),
+        )
+        if not path:
+            return "Error: image generation failed or is disabled."
+        if chat_id:
+            await telegram.send_photo(chat_id, path, caption=ctx.args["prompt"][:1000])
+            return f"Photo generated and sent ({path})."
+        return f"Photo generated at {path} (no chat to send to)."
+
     return Tool(
         name="take_photo",
-        description="Generate a photo/image using AI (Stable Diffusion).",
+        description="Generate a photo/image using AI (Stable Diffusion) and send it to the chat.",
         parameters={
             "type": "object",
             "properties": {
@@ -354,15 +465,42 @@ def create_take_photo_tool() -> Tool:
                 "negative_prompt": {"type": "string", "description": "What to avoid in the image", "default": ""},
                 "width": {"type": "integer", "description": "Image width", "default": 512},
                 "height": {"type": "integer", "description": "Image height", "default": 512},
+                "chat_id": {"type": "integer", "description": "Optional: target chat ID. Defaults to current chat."},
             },
             "required": ["prompt"],
         },
-        handler=lambda ctx: f"[Image generated: {ctx.args['prompt']}] (mock)",
+        handler=_handle,
     )
 
 
-def create_record_audio_tool() -> Tool:
-    """Generate a voice message using TTS."""
+def create_record_audio_tool(
+    telegram: TelegramClient,
+    openai: OpenAIChat,
+    chat: Optional[TelegramChat] = None,
+) -> Tool:
+    """Generate a voice message using TTS and send it to the chat."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        import time
+        from pathlib import Path
+
+        chat_id = ctx.args.get("chat_id") or (chat.id if chat else 0)
+        audio = await openai.synthesize_speech(ctx.args["text"], voice=ctx.args.get("voice"))
+        if not audio:
+            return "Error: text-to-speech failed or is disabled."
+
+        config = get_config()
+        ext = "mp3" if config.record_voice_backend.value == "elevenlabs" else config.record_voice_openai_format
+        out_dir = Path("data/generated_audio")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{int(time.time() * 1000)}.{ext}"
+        path.write_bytes(audio)
+
+        if chat_id:
+            await telegram.send_voice(chat_id, str(path), caption=ctx.args["text"][:200])
+            return f"Voice message generated and sent ({path})."
+        return f"Voice message generated at {path} (no chat to send to)."
+
     return Tool(
         name="record_audio",
         description="Record and send a voice message (text-to-speech).",
@@ -371,10 +509,11 @@ def create_record_audio_tool() -> Tool:
             "properties": {
                 "text": {"type": "string", "description": "The text to speak"},
                 "voice": {"type": "string", "description": "Voice name or ID (optional)"},
+                "chat_id": {"type": "integer", "description": "Optional: target chat ID. Defaults to current chat."},
             },
             "required": ["text"],
         },
-        handler=lambda ctx: f"[Voice message: {ctx.args['text']}] (mock)",
+        handler=_handle,
     )
 
 
@@ -478,6 +617,12 @@ def create_group_admin_tools(
     """Create group admin tools."""
     tools = []
 
+    async def _ban_user(ctx: ToolContext) -> str:
+        ok = await telegram.ban_chat_member(ctx.args["chat_id"], ctx.args["user_id"])
+        if ok:
+            return f"Banned user {ctx.args['user_id']} from chat {ctx.args['chat_id']}."
+        return f"Error: failed to ban user {ctx.args['user_id']} (missing rights or invalid IDs)."
+
     tools.append(Tool(
         name="group_admin_ban_user",
         description="Ban a user from a group (admin only).",
@@ -489,8 +634,12 @@ def create_group_admin_tools(
             },
             "required": ["chat_id", "user_id"],
         },
-        handler=lambda ctx: f"Banned user {ctx.args['user_id']} from chat {ctx.args['chat_id']} (mock)",
+        handler=_ban_user,
     ))
+
+    async def _remove_message(ctx: ToolContext) -> str:
+        await telegram.delete_message(ctx.args["chat_id"], ctx.args["message_id"])
+        return f"Removed message {ctx.args['message_id']} from chat {ctx.args['chat_id']}."
 
     tools.append(Tool(
         name="group_admin_remove_message",
@@ -503,12 +652,21 @@ def create_group_admin_tools(
             },
             "required": ["chat_id", "message_id"],
         },
-        handler=lambda ctx: f"Removed message {ctx.args['message_id']} from chat {ctx.args['chat_id']} (mock)",
+        handler=_remove_message,
     ))
+
+    async def _set_user_tag(ctx: ToolContext) -> str:
+        ok = await telegram.set_member_tag(ctx.args["chat_id"], ctx.args["user_id"], ctx.args["tag"])
+        if ok:
+            return f"Set tag '{ctx.args['tag']}' for user {ctx.args['user_id']} in chat {ctx.args['chat_id']}."
+        return f"Error: failed to set tag for user {ctx.args['user_id']} (missing rights or invalid IDs)."
 
     tools.append(Tool(
         name="group_admin_set_user_tag",
-        description="Set a tag/role for a user in a group (admin only).",
+        description=(
+            "Set a role for a user in a group (admin only). "
+            "tag='admin' or 'moderator' promotes to administrator; any other value demotes to a plain member."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -518,17 +676,59 @@ def create_group_admin_tools(
             },
             "required": ["chat_id", "user_id", "tag"],
         },
-        handler=lambda ctx: f"Set tag {ctx.args['tag']} for user {ctx.args['user_id']} in chat {ctx.args['chat_id']} (mock)",
+        handler=_set_user_tag,
     ))
 
     return tools
 
 
 def create_web_search_tool() -> Tool:
-    """Web search tool (requires API key)."""
+    """Web search tool, backed by Ollama's cloud web search API.
+
+    Requires `capabilities.web_search.ollama_bearer_key` to be set in
+    config.toml (get a free key at https://ollama.com). Without it, the tool
+    still works but is subject to a much stricter anonymous rate limit.
+    """
+
+    async def _handle(ctx: ToolContext) -> str:
+        config = get_config()
+        query = ctx.args["query"]
+        max_results = ctx.args.get("max_results", 5)
+
+        headers = {"Content-Type": "application/json"}
+        if config.web_search_ollama_key:
+            headers["Authorization"] = f"Bearer {config.web_search_ollama_key}"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://ollama.com/api/web_search",
+                    json={"query": query, "max_results": max_results},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status != 200:
+                        err = await resp.text()
+                        return f"Error: web search failed ({resp.status}): {err[:300]}"
+                    data = await resp.json()
+        except Exception as e:
+            return f"Error: web search request failed: {e}"
+
+        results = data.get("results", [])
+        if not results:
+            return f"No web search results found for: {query}"
+
+        parts = [f"Web search results for: {query}\n"]
+        for r in results[:max_results]:
+            title = r.get("title", "")
+            url = r.get("url", "")
+            content = (r.get("content") or "")[:400]
+            parts.append(f"- {title} ({url})\n  {content}")
+        return "\n".join(parts)
+
     return Tool(
         name="web_search",
-        description=" the web for current information.",
+        description="Search the web for current information.",
         parameters={
             "type": "object",
             "properties": {
@@ -537,7 +737,7 @@ def create_web_search_tool() -> Tool:
             },
             "required": ["query"],
         },
-        handler=lambda ctx: f"[Web search results for: {ctx.args['query']}] (mock)",
+        handler=_handle,
     )
 
 
@@ -545,18 +745,64 @@ def create_web_search_tool() -> Tool:
 # Helper to build default tools
 # ============================================================
 
+def create_join_chat_tool(telegram: TelegramClient) -> Tool:
+    """Join a chat/channel by invite link."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        try:
+            chat_id = await telegram.join_chat_by_link(ctx.args["invite_link"])
+            return f"Joined chat, chat_id={chat_id}."
+        except RuntimeError as e:
+            return f"Error: {e}"
+
+    return Tool(
+        name="join_chat",
+        description="Join a chat, group, or channel using an invite link (t.me/... or +invite hash).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "invite_link": {"type": "string", "description": "The invite link to join"},
+            },
+            "required": ["invite_link"],
+        },
+        handler=_handle,
+    )
+
+
+def create_leave_chat_tool(telegram: TelegramClient) -> Tool:
+    """Leave a chat/group/channel."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        await telegram.leave_chat(ctx.args["chat_id"])
+        return f"Left chat {ctx.args['chat_id']}."
+
+    return Tool(
+        name="leave_chat",
+        description="Leave a chat, group, or channel.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "integer", "description": "The chat ID to leave"},
+            },
+            "required": ["chat_id"],
+        },
+        handler=_handle,
+    )
+
+
 def create_default_tools(
     telegram: TelegramClient,
     diary: Diary,
     openai: OpenAIChat,
     current_chat: Optional[TelegramChat] = None,
     is_admin: bool = False,
+    recent_bot_messages: Optional[List[str]] = None,
 ) -> OpenAITools:
     """Create a standard set of tools for the LLM."""
     tools = OpenAITools()
 
     # Core tools
-    tools.insert(create_send_telegram_message_tool(telegram, current_chat))
+    tools.insert(create_send_telegram_message_tool(telegram, current_chat, recent_bot_messages))
     tools.insert(create_get_telegram_chats_tool(telegram))
     tools.insert(create_search_chats_tool(telegram))
     tools.insert(create_search_messages_tool(telegram))
@@ -565,14 +811,14 @@ def create_default_tools(
 
     # Media tools
     if get_config().capability_take_photo:
-        tools.insert(create_take_photo_tool())
+        tools.insert(create_take_photo_tool(telegram, current_chat))
 
     if get_config().capability_record_voice:
-        tools.insert(create_record_audio_tool())
+        tools.insert(create_record_audio_tool(telegram, openai, current_chat))
 
     # Sticker tools
     if get_config().capability_use_stickers:
-        for st in create_sticker_tools(telegram):
+        for st in create_sticker_tools(telegram, current_chat):
             tools.insert(st)
 
     # Interaction tools
@@ -589,5 +835,11 @@ def create_default_tools(
     # Web search
     if get_config().capability_web_search:
         tools.insert(create_web_search_tool())
+
+    # Chat membership tools
+    if get_config().can_join_chats:
+        tools.insert(create_join_chat_tool(telegram))
+    if get_config().can_leave_chats:
+        tools.insert(create_leave_chat_tool(telegram))
 
     return tools
