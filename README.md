@@ -2,28 +2,34 @@
 
 Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI with Telegram interface, RAG memory, and OpenAI-compatible proxy.
 
-## Status
-
-### Implemented
-
-- ✅ Real TDLib integration via `aiotdlib`
-- ✅ LLM tool-calling loop
-  - Telegram actions
-  - Diary search
-  - Photo generation
-  - Voice generation
-  - Web search
-  - Admin tools
-- ✅ RAG diary with vector search
-- ✅ Nightly sleep consolidation
-- ✅ Vision — photo understanding
-- ✅ Hearing — voice transcription
-- ✅ Typing simulation
-- ✅ Anti-repeat detection
-- ✅ Working-memory persistence
-- ✅ OpenAI-compatible proxy server
-- ✅ Prometheus metrics (`llm_usage_*`) on port `9464`
-- ✅ Migration from C++ `kuni` via `tools/migrate_from_cpp_kuni.py`
+Status
+Implemented
+✅ Real Telegram integration via aiotdlib
+✅ LLM tool-calling loop
+✅ Telegram messaging, editing, forwarding, reactions and group administration
+✅ Photo understanding (vision)
+✅ Voice-message transcription (hearing)
+✅ Text-to-speech / voice-message generation
+✅ AI image generation via Stable Diffusion
+✅ Web search via Ollama
+✅ OpenAI-compatible proxy server
+✅ Prometheus LLM usage metrics
+✅ Working memory with persistence and TTL
+✅ Character persona and system-prompt management
+✅ Notification queue and worker system
+✅ C++ kuni migration tool
+✅ Diary storage, embeddings, semantic search and sleep consolidation
+Partially implemented / needs work
+🟡 Diary memory ingestion — diary entries can be written internally, but there is currently no LLM tool for explicitly saving important memories. Most conversation data reaches the diary only when the conversation context is dumped after reaching the configured token limit.
+🟡 Diary RAG — semantic search works, but memory quality depends heavily on the embedding endpoint and current diary ingestion mechanism.
+🟡 Sleep consolidation — implemented, but its usefulness is limited when the diary contains few automatically collected memories.
+🟡 Vision — photo understanding is implemented; video-message frame extraction is not.
+🟡 Optional capabilities — vision, hearing, TTS, web search, image generation and proxy are disabled by default and require external backends/configuration.
+🟡 Proxy streaming — streaming requests are handled internally and the final response is emitted as a single SSE chunk rather than token-by-token.
+Not implemented
+❌ Video-message vision / frame extraction
+❌ Dedicated LLM diary-write / memory-save tool
+❌ Full parity with the original C++ kuni memory workflow
 
 ### Known gaps
 
