@@ -8,6 +8,7 @@ tools, see the results, and call more tools, until it stops calling tools).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from typing import Any, Dict, List, Optional
@@ -117,6 +118,40 @@ class Worker:
             except Exception as e:
                 logger.error(f"Failed to send message: {e}")
 
+    def _log_assistant_turn(self, chat_id: int, content: str, tool_calls: Optional[List[Dict[str, Any]]]) -> None:
+        """Print the model's reasoning text and any tool calls it's about to
+        make, so what the bot is "thinking" and doing is visible in the
+        console/log instead of only the final delivered message."""
+        prefix = f"[chat_{chat_id}]"
+        if content and content.strip():
+            logger.info(f"{prefix} \u25b8 thinking: {content.strip()}")
+        for tc in (tool_calls or []):
+            fn = tc.get("function", {}) or {}
+            name = fn.get("name", "?")
+            args_raw = fn.get("arguments", "")
+            try:
+                args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                args_str = json.dumps(args, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                args_str = str(args_raw)
+            logger.info(f"{prefix} \u2699 {name}({args_str})")
+
+    def _log_tool_results(
+        self,
+        chat_id: int,
+        tool_calls: Optional[List[Dict[str, Any]]],
+        tool_results: List[Message],
+    ) -> None:
+        """Print each tool's result next to the call that produced it."""
+        prefix = f"[chat_{chat_id}]"
+        names_by_id = {tc.get("id"): (tc.get("function", {}) or {}).get("name", "?") for tc in (tool_calls or [])}
+        for result in tool_results:
+            name = names_by_id.get(result.tool_call_id, "?")
+            text = (result.content or "").strip()
+            if len(text) > 300:
+                text = text[:300] + "\u2026"
+            logger.info(f"{prefix} \u2190 {name}: {text}")
+
     async def _generate_response(self, notification: Notification, chat_id: int) -> Optional[str]:
         """Run the LLM tool-calling loop for one notification.
 
@@ -170,6 +205,8 @@ class Worker:
             content = choice_message.get("content") or ""
             tool_calls = choice_message.get("tool_calls") or None
 
+            self._log_assistant_turn(chat_id, content, tool_calls)
+
             messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
 
             if not tool_calls:
@@ -181,6 +218,7 @@ class Worker:
             ever_called_tool = True
             if tools is not None:
                 tool_results = await tools.handle_tool_calls(tool_calls, messages)
+                self._log_tool_results(chat_id, tool_calls, tool_results)
                 messages.extend(tool_results)
             else:
                 # No telegram/tool support available; can't fulfil the call.

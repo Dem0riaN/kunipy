@@ -54,6 +54,7 @@ class Config:
     papik_chat_id: int = 625207005
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
+    telegram_phone: str = ""
     telegram_enabled: bool = True
     llm: EndpointAndModel = field(default_factory=lambda: EndpointAndModel(
         endpoint=Endpoint(base_url="http://localhost:11434/v1/"),
@@ -149,8 +150,8 @@ class Config:
         cfg.papik_chat_id = general.get("papik_chat_id", cfg.papik_chat_id)
         cfg.telegram_api_id = general.get("telegram_api_id", cfg.telegram_api_id)
         cfg.telegram_api_hash = general.get("telegram_api_hash", cfg.telegram_api_hash)
+        cfg.telegram_phone = general.get("telegram_phone", cfg.telegram_phone)
         cfg.telegram_enabled = general.get("telegram_enabled", cfg.telegram_enabled)
-        cfg.telegram_phone = general.get("telegram_phone", ...)
         if "llm" in general:
             llm = general["llm"]
             cfg.llm.model = llm.get("model", cfg.llm.model)
@@ -288,6 +289,7 @@ def save_config(cfg: Config, path: Path) -> None:
             "papik_chat_id": cfg.papik_chat_id,
             "telegram_api_id": cfg.telegram_api_id,
             "telegram_api_hash": cfg.telegram_api_hash,
+            "telegram_phone": cfg.telegram_phone,
             "telegram_enabled": cfg.telegram_enabled,
             "lockdown": cfg.lockdown.value,
             "llm": {
