@@ -6,7 +6,7 @@ Status
 Implemented
 ✅ Real Telegram integration via aiotdlib
 ✅ LLM tool-calling loop
-✅ Telegram messaging, editing, forwarding, reactions and group administration
+✅ Telegram messaging, editing, forwarding, reactions, and group administration
 ✅ Photo understanding (vision)
 ✅ Voice-message transcription (hearing)
 ✅ Text-to-speech / voice-message generation
@@ -18,24 +18,19 @@ Implemented
 ✅ Character persona and system-prompt management
 ✅ Notification queue and worker system
 ✅ C++ kuni migration tool
-✅ Diary storage, embeddings, semantic search and sleep consolidation
+✅ Diary storage, embeddings, semantic search, and sleep consolidation
 Partially implemented / needs work
 🟡 Diary memory ingestion — diary entries can be written internally, but there is currently no LLM tool for explicitly saving important memories. Most conversation data reaches the diary only when the conversation context is dumped after reaching the configured token limit.
-🟡 Diary RAG — semantic search works, but memory quality depends heavily on the embedding endpoint and current diary ingestion mechanism.
+🟡 Diary RAG — semantic search works, but memory quality depends heavily on the embedding endpoint and the current diary ingestion mechanism.
 🟡 Sleep consolidation — implemented, but its usefulness is limited when the diary contains few automatically collected memories.
 🟡 Vision — photo understanding is implemented; video-message frame extraction is not.
-🟡 Optional capabilities — vision, hearing, TTS, web search, image generation and proxy are disabled by default and require external backends/configuration.
-🟡 Proxy streaming — streaming requests are handled internally and the final response is emitted as a single SSE chunk rather than token-by-token.
+🟡 Optional capabilities — vision, hearing, TTS, web search, image generation, and proxy are disabled by default and require external backends and configuration.
+🟡 Proxy streaming — streaming requests are handled internally, but responses are not emitted token-by-token.
 Not implemented
 ❌ Video-message vision / frame extraction
 ❌ Dedicated LLM diary-write / memory-save tool
 ❌ Full parity with the original C++ kuni memory workflow
-
-### Known gaps
-
-- ⬜ Video-message vision (frame extraction) is not implemented
-- ⬜ Proxy server streaming responses are not token-by-token (see `proxy_server.py` docstring)
-- ⬜ 11 C++ prompt files (`system.md`, `anti_repeat.md`, etc.) are not yet wired up as separate editable files
+❌ Separate editable prompt files for all C++ prompts (system.md, anti_repeat.md, etc.)
 
 
 ## Requirements
