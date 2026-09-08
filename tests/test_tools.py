@@ -13,7 +13,14 @@ import src.config as cfgmod  # noqa: E402
 from src.config import Config  # noqa: E402
 import logging
 
-from src.tools import ToolContext, _check_anti_repeat, create_join_chat_tool, create_leave_chat_tool  # noqa: E402
+from src.telegram_client import TelegramChat  # noqa: E402
+from src.tools import (  # noqa: E402
+    ToolContext,
+    _check_anti_repeat,
+    create_join_chat_tool,
+    create_leave_chat_tool,
+    create_send_telegram_message_tool,
+)
 
 
 def _use_config(**overrides) -> Config:
@@ -92,3 +99,77 @@ async def test_leave_chat_tool():
     result = await tool.handler(ctx)
     assert calls == [555]
     assert "555" in result
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_message_rejects_mismatched_chat_id():
+    """Regression test mirroring the original C++ kuni's cross-chat guard:
+    the model must not be able to send to a chat_id other than the one
+    this tool instance is bound to."""
+    class FakeTelegram:
+        async def get_chat_history(self, chat_id, limit=30):
+            return []
+
+    chat = TelegramChat(id=111, title="Alice", type="private")
+    tool = create_send_telegram_message_tool(FakeTelegram(), chat, recent_bot_messages=[])
+    ctx = ToolContext(
+        args={"text": "hi", "chat_id": 999},
+        logger=logging.getLogger("test"),
+        temporary_context=[],
+    )
+    result = await tool.handler(ctx)
+    assert "Error" in result
+    assert "other chats" in result
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_message_rejects_reply_to_outside_history():
+    class FakeTelegram:
+        async def get_chat_history(self, chat_id, limit=30):
+            return []  # empty history -- the requested reply target isn't here
+
+        async def send_message(self, chat_id, text, reply_to_message_id=None):
+            raise AssertionError("send_message should not be called")
+
+        async def send_typing(self, chat_id):
+            pass
+
+    chat = TelegramChat(id=111, title="Alice", type="private")
+    tool = create_send_telegram_message_tool(FakeTelegram(), chat, recent_bot_messages=[])
+    ctx = ToolContext(
+        args={"text": "hi", "reply_to": 555},
+        logger=logging.getLogger("test"),
+        temporary_context=[],
+    )
+    result = await tool.handler(ctx)
+    assert "Error" in result
+    assert "isn't in this chat" in result
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_message_allows_reply_to_within_history():
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeMsg:
+        id: int
+
+    class FakeTelegram:
+        async def get_chat_history(self, chat_id, limit=30):
+            return [FakeMsg(id=555), FakeMsg(id=556)]
+
+        async def send_message(self, chat_id, text, reply_to_message_id=None):
+            return {"chat_id": chat_id, "text": text, "reply_to_message_id": reply_to_message_id}
+
+        async def send_typing(self, chat_id):
+            pass
+
+    chat = TelegramChat(id=111, title="Alice", type="private")
+    tool = create_send_telegram_message_tool(FakeTelegram(), chat, recent_bot_messages=[])
+    ctx = ToolContext(
+        args={"text": "hi", "reply_to": 555},
+        logger=logging.getLogger("test"),
+        temporary_context=[],
+    )
+    result = await tool.handler(ctx)
+    assert result["reply_to_message_id"] == 555

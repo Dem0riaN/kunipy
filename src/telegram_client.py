@@ -30,10 +30,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from aiotdlib import Client, ClientSettings
+from aiotdlib.api import API
 from aiotdlib.api.errors.error import AioTDLibError
-#from aiotdlib.api import types as td
-from aiotdlib.api import API, types as td
-
+from aiotdlib.api import types as td
 
 from .config import get_config
 
@@ -101,16 +100,31 @@ class TelegramClient:
         self._client: Optional[Client] = None
         self._my_id: Optional[int] = None
         self._is_ready = False
+        self._last_authorization_state: Optional[str] = None
         self._chat_cache: Dict[int, TelegramChat] = {}
         self._user_cache: Dict[int, TelegramUser] = {}
         self._callbacks: List[Callable[[Dict[str, Any]], Any]] = []
 
-    async def start(self, phone_number: Optional[str] = None) -> None:
+    async def start(
+        self,
+        phone_number: Optional[str] = None,
+        connect_timeout: float = 90.0,
+        max_retries: int = 3,
+    ) -> None:
         """Initialize connection to Telegram and authenticate.
 
         Phone number / SMS-code / 2FA-password / registration prompts are all
-        handled interactively by aiotdlib itself (it reads from stdin), so we
-        just need to provide the phone number (if we have one) and wait.
+        handled interactively by aiotdlib itself (it reads from stdin) --
+        *except* the phone number, which aiotdlib requires to be present
+        (non-empty) in `ClientSettings` before it will even start, so we
+        prompt for it ourselves here if it's not configured.
+
+        Every authorization-state transition TDLib reports (waiting for
+        phone number, waiting for code, ready, ...) is logged, and the whole
+        connect+authorize sequence is retried with backoff up to
+        `max_retries` times if it doesn't complete within `connect_timeout`
+        seconds -- so a stalled/broken connection is visible and recoverable
+        instead of hanging silently forever.
         """
         if not self.api_id or not self.api_hash:
             raise ValueError("Telegram API ID and hash must be set in config.toml")
@@ -119,7 +133,20 @@ class TelegramClient:
 
         if phone_number is None:
             config = get_config()
-            phone_number = getattr(config, "telegram_phone", "") or None
+            phone_number = config.telegram_phone or None
+
+        if not phone_number:
+            # Even if data/tdlib already holds a valid, previously-authorized
+            # session (e.g. copied over via tools/migrate_from_cpp_kuni.py),
+            # aiotdlib still requires *some* phone number to construct
+            # ClientSettings -- it just won't be used for a fresh login in
+            # that case.
+            phone_number = input(
+                "Telegram phone number (with country code, e.g. +1234567890; "
+                "set general.telegram_phone in config.toml to skip this prompt): "
+            ).strip()
+            if not phone_number:
+                raise ValueError("A phone number is required to start the Telegram client")
 
         settings = ClientSettings(
             api_id=self.api_id,
@@ -129,22 +156,64 @@ class TelegramClient:
             device_model="kunipy",
             application_version="0.1.0",
         )
-        self._client = Client(settings=settings)
 
-        # Register a single catch-all handler; we dispatch by update type.
-#        self._client.add_event_handler(self._handle_update, td.API.Types.ANY)
-        self._client.add_event_handler(self._handle_update, API.Types.ANY)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"Connecting to Telegram (attempt {attempt}/{max_retries})...")
+            self._client = Client(settings=settings)
+            self._client.add_event_handler(self._handle_update, API.Types.ANY)
+            self._client.add_event_handler(self._log_authorization_state, API.Types.UPDATE_AUTHORIZATION_STATE)
 
+            try:
+                await asyncio.wait_for(self._client.start(), timeout=connect_timeout)
+                self._my_id = await self._client.get_my_id()
+                self._is_ready = True
+                logger.info(f"Telegram client ready, my_id={self._my_id}")
+                return
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(
+                    f"Timed out after {connect_timeout}s waiting for Telegram authorization to complete "
+                    f"(stuck at state: {self._last_authorization_state or 'unknown, no update received at all'})"
+                )
+                logger.error(str(last_error))
+            except Exception as e:
+                last_error = e
+                logger.error(f"Failed to start Telegram client (attempt {attempt}/{max_retries}): {e}")
 
-        logger.info("Starting Telegram client and authenticating...")
-        try:
-            await self._client.start()
-            self._my_id = await self._client.get_my_id()
-            self._is_ready = True
-            logger.info(f"Logged in, my_id={self._my_id}")
-        except Exception as e:
-            logger.error(f"Failed to start Telegram client: {e}")
-            raise
+            # Clean up the failed client before retrying.
+            try:
+                if self._client:
+                    await self._client.stop()
+            except Exception:
+                pass
+            self._client = None
+
+            if attempt < max_retries:
+                backoff = min(5 * attempt, 30)
+                logger.info(f"Retrying Telegram connection in {backoff}s...")
+                await asyncio.sleep(backoff)
+
+        raise RuntimeError(f"Could not start Telegram client after {max_retries} attempts") from last_error
+
+    async def _log_authorization_state(self, client: "Client", update: Any) -> None:
+        """Log every TDLib authorization-state transition as it happens, so a
+        stalled login (e.g. waiting on a code that was never entered) is
+        visible in the logs instead of looking like a silent hang."""
+        state = getattr(update, "authorization_state", None)
+        state_name = type(state).__name__ if state is not None else "unknown"
+        self._last_authorization_state = state_name
+        logger.info(f"Telegram authorization state: {state_name}")
+
+        if isinstance(state, td.AuthorizationStateWaitPhoneNumber):
+            logger.info("Waiting for phone number...")
+        elif isinstance(state, td.AuthorizationStateWaitCode):
+            logger.info("Waiting for the login code sent to your Telegram/SMS...")
+        elif isinstance(state, td.AuthorizationStateWaitPassword):
+            logger.info("Waiting for your 2FA password...")
+        elif isinstance(state, td.AuthorizationStateWaitRegistration):
+            logger.info("This phone number isn't registered on Telegram yet -- waiting for registration info...")
+        elif isinstance(state, td.AuthorizationStateReady):
+            logger.info("Telegram authorization complete.")
 
     async def stop(self) -> None:
         """Shutdown Telegram client."""

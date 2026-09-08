@@ -63,6 +63,12 @@ def test_from_toml_dict_record_voice_backend():
     assert cfg.record_voice_backend == TTSBackend.OPENAI
 
 
+def test_from_toml_dict_telegram_phone():
+    data = {"general": {"telegram_phone": "+1234567890"}}
+    cfg = Config.from_toml_dict(data)
+    assert cfg.telegram_phone == "+1234567890"
+
+
 def test_from_toml_dict_missing_sections_uses_defaults():
     cfg = Config.from_toml_dict({})
     assert cfg == Config()

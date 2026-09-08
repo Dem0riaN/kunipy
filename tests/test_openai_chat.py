@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import src.config as cfgmod  # noqa: E402
 from src.config import Config, Endpoint, EndpointAndModel, TTSBackend  # noqa: E402
-from src.openai_chat import OpenAIChat  # noqa: E402
+from src.openai_chat import ChatResponse, OpenAIChat  # noqa: E402
 
 
 @pytest.fixture
@@ -126,3 +126,27 @@ async def test_synthesize_speech_disabled_returns_none():
         await client.close()
 
     assert audio is None
+
+
+def test_record_usage_metrics_handles_null_prompt_tokens_details():
+    """Regression test: some servers send "prompt_tokens_details": null
+    explicitly rather than omitting the key, which used to crash with
+    AttributeError: 'NoneType' object has no attribute 'get'."""
+    client = OpenAIChat(endpoint=Config().llm)
+    response = ChatResponse(
+        id="x", model="m", choices=[],
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "prompt_tokens_details": None},
+    )
+    client._record_usage_metrics(response)  # must not raise
+
+
+def test_record_usage_metrics_handles_missing_usage():
+    client = OpenAIChat(endpoint=Config().llm)
+    response = ChatResponse(id="x", model="m", choices=[], usage=None)
+    client._record_usage_metrics(response)  # must not raise
+
+
+def test_record_usage_metrics_handles_non_dict_usage():
+    client = OpenAIChat(endpoint=Config().llm)
+    response = ChatResponse(id="x", model="m", choices=[], usage="not a dict")
+    client._record_usage_metrics(response)  # must not raise

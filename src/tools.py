@@ -150,7 +150,32 @@ def create_send_telegram_message_tool(
 
     async def _handle(ctx: ToolContext) -> Any:
         text = ctx.args["text"]
-        chat_id = ctx.args.get("chat_id") or (chat.id if chat else 0)
+        current_chat_id = chat.id if chat else 0
+        requested_chat_id = ctx.args.get("chat_id")
+
+        # Guard against the model confusing chats: reject any explicit
+        # chat_id that doesn't match the chat this tool instance was bound
+        # to, instead of silently sending there.
+        if requested_chat_id and current_chat_id and requested_chat_id != current_chat_id:
+            title = chat.title if chat else str(current_chat_id)
+            return (
+                f'Error: you can\'t send messages to other chats. Open them first. '
+                f'You are currently in chat "{title}" (chat_id={current_chat_id}).'
+            )
+        chat_id = requested_chat_id or current_chat_id
+
+        reply_to = ctx.args.get("reply_to")
+        if reply_to and chat_id:
+            # Guard against replying to a message_id that belongs to a
+            # different chat (a real, previously-observed failure mode: the
+            # model mixes up message IDs across chats it has open).
+            recent_history = await telegram.get_chat_history(chat_id, limit=30)
+            if not any(m.id == reply_to for m in recent_history):
+                return (
+                    "Error: you are trying to reply to a message that isn't in this chat's recent "
+                    "history. Don't guess message IDs -- only reply_to a message_id you actually saw "
+                    "in this conversation, or omit reply_to."
+                )
 
         repeat_warning = _check_anti_repeat(text, recent_bot_messages)
         if repeat_warning:
@@ -160,7 +185,7 @@ def create_send_telegram_message_tool(
         return await telegram.send_message(
             chat_id=chat_id,
             text=text,
-            reply_to_message_id=ctx.args.get("reply_to"),
+            reply_to_message_id=reply_to,
         )
 
     return Tool(

@@ -197,26 +197,25 @@ class OpenAIChat:
 
     def _record_usage_metrics(self, response: ChatResponse) -> None:
         """Record token usage from a completed chat response, if the
-        `metrics` module (prometheus_client) is available."""
-        # Отладочный вывод (можно удалить после проверки)
-        print(f"DEBUG: entering _record_usage_metrics, response.usage = {response.usage}")
+        `metrics` module (prometheus_client) is available.
+
+        Best-effort: some OpenAI-compatible servers (notably local ones)
+        send `"prompt_tokens_details": null` explicitly rather than omitting
+        the key, so `.get(key, {})` alone isn't enough -- `.get` only falls
+        back to the default when the key is *absent*, not when its value is
+        `None`. Any failure here is logged and swallowed rather than
+        breaking the actual LLM response path.
+        """
         try:
             from .metrics import record_usage
         except ImportError:
             return
         try:
-            usage = response.usage
-            if not isinstance(usage, dict):
-                usage = {}
-            print(f"DEBUG: usage after check = {usage}")
-            prompt_tokens = usage.get("prompt_tokens", 0)
-            completion_tokens = usage.get("completion_tokens", 0)
-            # Безопасное получение cached_tokens
+            usage = response.usage if isinstance(response.usage, dict) else {}
+            prompt_tokens = usage.get("prompt_tokens") or 0
+            completion_tokens = usage.get("completion_tokens") or 0
             details = usage.get("prompt_tokens_details")
-            if isinstance(details, dict):
-                cached_tokens = details.get("cached_tokens", 0) or 0
-            else:
-                cached_tokens = 0
+            cached_tokens = (details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
             record_usage(
                 model=response.model or self.endpoint.model,
                 prompt_tokens=prompt_tokens,
@@ -224,7 +223,7 @@ class OpenAIChat:
                 cached_tokens=cached_tokens,
             )
         except Exception as e:
-            logger.error(f"Failed to record usage metrics: {e}", exc_info=True)
+            logger.warning(f"Failed to record usage metrics: {e}")
 
     def _parse_response(self, data: dict) -> ChatResponse:
         return ChatResponse(
