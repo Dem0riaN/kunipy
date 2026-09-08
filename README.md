@@ -87,6 +87,7 @@ pip install -e ".[dev]"
 
 ## Configuration
 
+<<<<<<< Updated upstream
 `config.toml` in the project root holds all settings and supports
 hot-reload (edit it while the app is running; changes are picked up
 without a restart). A default file with bilingual (RU/EN) comments is
@@ -94,6 +95,11 @@ included in this repo — copy or edit it directly rather than starting
 from scratch.
 
 Minimal configuration:
+=======
+`config.toml` is **never shipped** in this repo/archive — only `config.example.toml` is, purely for reference. This is intentional: `config.toml` holds your Telegram API credentials and other secrets, and shipping a same-named file alongside it would silently overwrite yours every time you re-download an update.
+
+Run `python run.py` once with no `config.toml` present -- it will generate a default one next to itself and exit, asking you to fill it in. At minimum, set:
+>>>>>>> Stashed changes
 
 ```toml
 [general]
