@@ -28,7 +28,40 @@ def _make_worker(chat_max_history_length: int) -> Worker:
     return worker
 
 
-def test_trim_history_keeps_all_when_under_limit():
+def test_log_assistant_turn_prints_thinking_and_tool_calls(caplog):
+    worker = _make_worker(chat_max_history_length=1000)
+    tool_calls = [{"id": "c1", "type": "function", "function": {"name": "send_telegram_message", "arguments": '{"text": "hi"}'}}]
+    with caplog.at_level("INFO"):
+        worker._log_assistant_turn(chat_id=42, content="thought: say hi", tool_calls=tool_calls)
+    text = caplog.text
+    assert "[chat_42]" in text
+    assert "thinking: thought: say hi" in text
+    assert 'send_telegram_message({"text": "hi"})' in text
+
+
+def test_log_assistant_turn_skips_empty_content(caplog):
+    worker = _make_worker(chat_max_history_length=1000)
+    with caplog.at_level("INFO"):
+        worker._log_assistant_turn(chat_id=42, content="", tool_calls=None)
+    assert "thinking:" not in caplog.text
+
+
+def test_log_tool_results_matches_call_names_by_id(caplog):
+    worker = _make_worker(chat_max_history_length=1000)
+    tool_calls = [{"id": "c1", "type": "function", "function": {"name": "send_telegram_message"}}]
+    results = [Message(role="tool", content="Message sent successfully.", tool_call_id="c1")]
+    with caplog.at_level("INFO"):
+        worker._log_tool_results(chat_id=42, tool_calls=tool_calls, tool_results=results)
+    assert "send_telegram_message: Message sent successfully." in caplog.text
+
+
+def test_log_tool_results_truncates_long_output(caplog):
+    worker = _make_worker(chat_max_history_length=1000)
+    tool_calls = [{"id": "c1", "type": "function", "function": {"name": "web_search"}}]
+    results = [Message(role="tool", content="x" * 500, tool_call_id="c1")]
+    with caplog.at_level("INFO"):
+        worker._log_tool_results(chat_id=42, tool_calls=tool_calls, tool_results=results)
+    assert "\u2026" in caplog.text
     worker = _make_worker(chat_max_history_length=1000)
     messages = [Message(role="user", content="short") for _ in range(5)]
     trimmed = worker._trim_history(messages)
