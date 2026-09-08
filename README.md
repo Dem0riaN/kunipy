@@ -4,9 +4,33 @@ Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI wit
 
 ## Status
 
-Implements: real TDLib integration (via `aiotdlib`), LLM tool-calling loop (Telegram actions, diary search, photo/voice generation, web search, admin tools), RAG diary with vector search + nightly sleep consolidation, vision (photo understanding) and hearing (voice transcription), typing simulation, anti-repeat detection, working-memory persistence, an OpenAI-compatible proxy server, and Prometheus metrics (`llm_usage_*` on port 9464). See `tools/migrate_from_cpp_kuni.py` to import an existing C++ `kuni` install's diary/config/session.
+### Implemented
 
-Known gaps: video-message vision (frame extraction) is not implemented; the proxy server's streaming responses are not token-by-token (see docstring in `proxy_server.py`); 11 of the C++ version's prompt files (`system.md`, `anti_repeat.md`, etc.) aren't wired up as separate editable files yet.
+- ✅ Real TDLib integration via `aiotdlib`
+- ✅ LLM tool-calling loop
+  - Telegram actions
+  - Diary search
+  - Photo generation
+  - Voice generation
+  - Web search
+  - Admin tools
+- ✅ RAG diary with vector search
+- ✅ Nightly sleep consolidation
+- ✅ Vision — photo understanding
+- ✅ Hearing — voice transcription
+- ✅ Typing simulation
+- ✅ Anti-repeat detection
+- ✅ Working-memory persistence
+- ✅ OpenAI-compatible proxy server
+- ✅ Prometheus metrics (`llm_usage_*`) on port `9464`
+- ✅ Migration from C++ `kuni` via `tools/migrate_from_cpp_kuni.py`
+
+### Known gaps
+
+- ⬜ Video-message vision (frame extraction) is not implemented
+- ⬜ Proxy server streaming responses are not token-by-token (see `proxy_server.py` docstring)
+- ⬜ 11 C++ prompt files (`system.md`, `anti_repeat.md`, etc.) are not yet wired up as separate editable files
+
 
 ## Requirements
 
@@ -81,9 +105,9 @@ If you already have a working C++ `kuni` install (diary entries, working memory,
 
 ```bash
 python tools/migrate_from_cpp_kuni.py \
-    --source /path/to/kuni/build/bin \
-    --dest . \
-    --dry-run     # inspect first, then re-run without --dry-run
+--source /path/to/kuni/build/bin \
+--dest . \
+--dry-run     # inspect first, then re-run without --dry-run
 ```
 
 `--source` must point at the C++ binary's *actual runtime working directory* (typically `build/bin/` inside the kuni checkout), not the repository root. See the script's module docstring for exactly what gets converted and why (config key renames, diary metadata key renames, TDLib session reuse, etc.).
