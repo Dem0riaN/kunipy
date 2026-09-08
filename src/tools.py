@@ -27,6 +27,21 @@ from .telegram_client import TelegramClient, TelegramChat, TelegramMessage
 logger = logging.getLogger(__name__)
 
 
+def _json_default(obj: Any) -> Any:
+    """Fallback encoder for `json.dumps(..., default=_json_default)`.
+
+    Tool handlers are expected to return plain strings (or JSON-native
+    types), but as a safety net -- so a handler that forgets this and
+    returns e.g. a `TelegramMessage`/`TelegramChat` dataclass doesn't crash
+    the whole tool-calling loop with a bare `TypeError` -- convert dataclass
+    instances to dicts and fall back to `str()` for anything else.
+    """
+    import dataclasses
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    return str(obj)
+
+
 class ToolContext:
     """Context passed to tool handlers."""
 
@@ -121,7 +136,7 @@ class OpenAITools:
                 if isinstance(result, str):
                     content = result
                 else:
-                    content = json.dumps(result, ensure_ascii=False)
+                    content = json.dumps(result, ensure_ascii=False, default=_json_default)
                 results.append(Message(
                     role="tool",
                     content=content,
@@ -182,11 +197,13 @@ def create_send_telegram_message_tool(
             return repeat_warning
 
         await _simulate_typing(telegram, chat_id, text)
-        return await telegram.send_message(
+        sent = await telegram.send_message(
             chat_id=chat_id,
             text=text,
             reply_to_message_id=reply_to,
         )
+        title = chat.title if chat else str(chat_id)
+        return f'Message sent successfully to "{title}"; message_id={sent.id}.'
 
     return Tool(
         name="send_telegram_message",
@@ -261,6 +278,14 @@ def create_get_telegram_chats_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """Get list of Telegram chats."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        chats = await telegram.get_chats(limit=ctx.args.get("limit", 50))
+        if not chats:
+            return "No chats found."
+        lines = [f"- {c.title} (chat_id={c.id}, type={c.type}, unread={c.unread_count})" for c in chats]
+        return "\n".join(lines)
+
     return Tool(
         name="get_telegram_chats",
         description="Retrieve a list of your Telegram chats (conversations, groups, channels).",
@@ -270,7 +295,7 @@ def create_get_telegram_chats_tool(
                 "limit": {"type": "integer", "description": "Maximum number of chats to return", "default": 50},
             },
         },
-        handler=lambda ctx: telegram.get_chats(limit=ctx.args.get("limit", 50)),
+        handler=_handle,
     )
 
 
@@ -278,6 +303,14 @@ def create_search_chats_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """Search chats by name."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        chats = await telegram.search_chats(ctx.args["query"])
+        if not chats:
+            return f"No chats found matching: {ctx.args['query']}"
+        lines = [f"- {c.title} (chat_id={c.id}, type={c.type})" for c in chats]
+        return "\n".join(lines)
+
     return Tool(
         name="search_chats",
         description="Search for chats by name or title.",
@@ -288,7 +321,7 @@ def create_search_chats_tool(
             },
             "required": ["query"],
         },
-        handler=lambda ctx: telegram.search_chats(ctx.args["query"]),
+        handler=_handle,
     )
 
 
@@ -296,6 +329,21 @@ def create_search_messages_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """Search messages in a chat."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        messages = await telegram.search_messages(
+            chat_id=ctx.args.get("chat_id"),
+            query=ctx.args["query"],
+            limit=ctx.args.get("limit", 10),
+        )
+        if not messages:
+            return f"No messages found matching: {ctx.args['query']}"
+        lines = [
+            f"- [message_id={m.id}, chat_id={m.chat_id}] {m.content}"
+            for m in messages
+        ]
+        return "\n".join(lines)
+
     return Tool(
         name="search_messages",
         description="Search for messages in a specific chat or globally.",
@@ -308,11 +356,7 @@ def create_search_messages_tool(
             },
             "required": ["query"],
         },
-        handler=lambda ctx: telegram.search_messages(
-            chat_id=ctx.args.get("chat_id"),
-            query=ctx.args["query"],
-            limit=ctx.args.get("limit", 10),
-        ),
+        handler=_handle,
     )
 
 
@@ -320,6 +364,11 @@ def create_open_chat_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """Open a chat and load its history."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        await telegram.open_chat(ctx.args["chat_id"])
+        return f"Opened chat {ctx.args['chat_id']}."
+
     return Tool(
         name="open_chat_by_id",
         description="Open a Telegram chat by its ID. This loads recent messages and makes the chat current.",
@@ -330,7 +379,7 @@ def create_open_chat_tool(
             },
             "required": ["chat_id"],
         },
-        handler=lambda ctx: telegram.open_chat(ctx.args["chat_id"]),
+        handler=_handle,
     )
 
 
@@ -546,6 +595,11 @@ def create_react_with_emoji_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """React to a message with an emoji."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        await telegram.react_with_emoji(ctx.args["chat_id"], ctx.args["message_id"], ctx.args["emoji"])
+        return f"Reacted with {ctx.args['emoji']} to message {ctx.args['message_id']}."
+
     return Tool(
         name="react_with_emoji",
         description="React to a message with an emoji.",
@@ -558,11 +612,7 @@ def create_react_with_emoji_tool(
             },
             "required": ["chat_id", "message_id", "emoji"],
         },
-        handler=lambda ctx: telegram.react_with_emoji(
-            ctx.args["chat_id"],
-            ctx.args["message_id"],
-            ctx.args["emoji"],
-        ),
+        handler=_handle,
     )
 
 
@@ -570,6 +620,11 @@ def create_forward_message_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """Forward a message to another chat."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        await telegram.forward_message(ctx.args["from_chat_id"], ctx.args["message_id"], ctx.args["to_chat_id"])
+        return f"Forwarded message {ctx.args['message_id']} from chat {ctx.args['from_chat_id']} to chat {ctx.args['to_chat_id']}."
+
     return Tool(
         name="forward_message",
         description="Forward a message from one chat to another.",
@@ -582,11 +637,7 @@ def create_forward_message_tool(
             },
             "required": ["from_chat_id", "message_id", "to_chat_id"],
         },
-        handler=lambda ctx: telegram.forward_message(
-            ctx.args["from_chat_id"],
-            ctx.args["message_id"],
-            ctx.args["to_chat_id"],
-        ),
+        handler=_handle,
     )
 
 
@@ -594,6 +645,11 @@ def create_edit_message_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """Edit a message's text."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        await telegram.edit_message_text(ctx.args["chat_id"], ctx.args["message_id"], ctx.args["new_text"])
+        return f"Edited message {ctx.args['message_id']} in chat {ctx.args['chat_id']}."
+
     return Tool(
         name="edit_message_text",
         description="Edit the text of a sent message.",
@@ -606,11 +662,7 @@ def create_edit_message_tool(
             },
             "required": ["chat_id", "message_id", "new_text"],
         },
-        handler=lambda ctx: telegram.edit_message_text(
-            ctx.args["chat_id"],
-            ctx.args["message_id"],
-            ctx.args["new_text"],
-        ),
+        handler=_handle,
     )
 
 
@@ -618,6 +670,11 @@ def create_remove_message_tool(
     telegram: TelegramClient,
 ) -> Tool:
     """Delete a message."""
+
+    async def _handle(ctx: ToolContext) -> str:
+        await telegram.delete_message(ctx.args["chat_id"], ctx.args["message_id"])
+        return f"Deleted message {ctx.args['message_id']} in chat {ctx.args['chat_id']}."
+
     return Tool(
         name="remove_message",
         description="Delete a message (only allowed for own messages or if admin).",
@@ -629,10 +686,7 @@ def create_remove_message_tool(
             },
             "required": ["chat_id", "message_id"],
         },
-        handler=lambda ctx: telegram.delete_message(
-            ctx.args["chat_id"],
-            ctx.args["message_id"],
-        ),
+        handler=_handle,
     )
 
 

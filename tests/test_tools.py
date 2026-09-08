@@ -159,7 +159,7 @@ async def test_send_telegram_message_allows_reply_to_within_history():
             return [FakeMsg(id=555), FakeMsg(id=556)]
 
         async def send_message(self, chat_id, text, reply_to_message_id=None):
-            return {"chat_id": chat_id, "text": text, "reply_to_message_id": reply_to_message_id}
+            return FakeMsg(id=999)
 
         async def send_typing(self, chat_id):
             pass
@@ -172,4 +172,61 @@ async def test_send_telegram_message_allows_reply_to_within_history():
         temporary_context=[],
     )
     result = await tool.handler(ctx)
-    assert result["reply_to_message_id"] == 555
+    assert "message_id=999" in result
+
+
+@pytest.mark.asyncio
+async def test_get_telegram_chats_returns_string_not_raw_dataclasses():
+    """Regression test: handlers used to return raw TelegramChat/TelegramMessage
+    dataclasses, which crashed json.dumps() inside handle_tool_calls with
+    'Object of type TelegramChat is not JSON serializable' -- causing every
+    successful action to look like a failure to the LLM, which then retried
+    it (duplicate sends, duplicate replies, etc)."""
+    from src.tools import OpenAITools, create_get_telegram_chats_tool
+
+    class FakeTelegram:
+        async def get_chats(self, limit=50):
+            return [TelegramChat(id=1, title="Alice", type="private", unread_count=2)]
+
+    tools = OpenAITools()
+    tools.insert(create_get_telegram_chats_tool(FakeTelegram()))
+    tool_calls = [{"id": "c1", "type": "function", "function": {"name": "get_telegram_chats", "arguments": "{}"}}]
+    results = await tools.handle_tool_calls(tool_calls, [])
+    assert len(results) == 1
+    assert "Error" not in results[0].content
+    assert "Alice" in results[0].content
+
+
+@pytest.mark.asyncio
+async def test_react_forward_edit_remove_tools_return_confirmation_strings():
+    from src.tools import (
+        create_edit_message_tool,
+        create_forward_message_tool,
+        create_react_with_emoji_tool,
+        create_remove_message_tool,
+    )
+
+    class FakeTelegram:
+        async def react_with_emoji(self, chat_id, message_id, emoji):
+            return None
+
+        async def forward_message(self, from_chat_id, message_id, to_chat_id):
+            return None
+
+        async def edit_message_text(self, chat_id, message_id, new_text):
+            return None
+
+        async def delete_message(self, chat_id, message_id):
+            return None
+
+    telegram = FakeTelegram()
+    cases = [
+        (create_react_with_emoji_tool(telegram), {"chat_id": 1, "message_id": 2, "emoji": "😊"}),
+        (create_forward_message_tool(telegram), {"from_chat_id": 1, "message_id": 2, "to_chat_id": 3}),
+        (create_edit_message_tool(telegram), {"chat_id": 1, "message_id": 2, "new_text": "hi"}),
+        (create_remove_message_tool(telegram), {"chat_id": 1, "message_id": 2}),
+    ]
+    for tool, args in cases:
+        ctx = ToolContext(args=args, logger=logging.getLogger("test"), temporary_context=[])
+        result = await tool.handler(ctx)
+        assert isinstance(result, str) and result  # never None, never a raw object

@@ -72,3 +72,24 @@ def test_from_toml_dict_telegram_phone():
 def test_from_toml_dict_missing_sections_uses_defaults():
     cfg = Config.from_toml_dict({})
     assert cfg == Config()
+
+
+def test_save_config_with_none_fields_does_not_crash(tmp_path):
+    """Regression test: Config() defaults include several Optional[float]=None
+    fields (llm_top_p, llm_presence_penalty, ...). TOML has no null type, so
+    saving these as-is used to crash every brand-new install's very first
+    run with 'TypeError: Object of type NoneType is not TOML serializable'."""
+    from src.config import save_config
+
+    path = tmp_path / "config.toml"
+    save_config(Config(), path)  # must not raise
+    assert path.exists()
+
+    import tomli
+    with open(path, "rb") as f:
+        data = tomli.load(f)
+    # None-valued fields must simply be absent, not null.
+    assert "llm_top_p" not in data["misc"]
+    assert "llm_presence_penalty" not in data["misc"]
+    # Non-None fields must still be there.
+    assert data["misc"]["llm_temperature"] == 0.2

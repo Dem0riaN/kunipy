@@ -279,6 +279,24 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
     return _CONFIG
 
 
+def _strip_none(value: Any) -> Any:
+    """Recursively drop keys whose value is None.
+
+    TOML has no `null`/`None` type, so any `Optional[...] = None` field
+    (e.g. llm_top_p, llm_presence_penalty when left unset) must be omitted
+    entirely rather than written out, or `tomli_w.dump()` raises
+    `TypeError: Object of type 'NoneType' is not TOML serializable` --
+    which used to happen on every brand-new install's very first run, since
+    that's exactly when a default Config() (full of such None defaults) is
+    first written to disk.
+    """
+    if isinstance(value, dict):
+        return {k: _strip_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_strip_none(v) for v in value]
+    return value
+
+
 def save_config(cfg: Config, path: Path) -> None:
     """Save config to TOML file."""
     data: dict[str, Any] = {
@@ -418,7 +436,7 @@ def save_config(cfg: Config, path: Path) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
-        tomli_w.dump(data, f)
+        tomli_w.dump(_strip_none(data), f)
 
 
 def get_config() -> Config:
