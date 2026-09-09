@@ -5,8 +5,8 @@ Part of ТЗ-001 Phase 1 validation.
 """
 
 import asyncio
+
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
 
 from src.application.worker_orchestrator import WorkerOrchestrator
 from src.notification_manager import NotificationManager

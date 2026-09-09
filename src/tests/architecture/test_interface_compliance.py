@@ -3,7 +3,6 @@
 Verifies that implementations comply with their interface protocols.
 """
 
-import pytest
 from typing import get_type_hints
 
 
@@ -15,7 +14,6 @@ class TestInterfaceCompliance:
 
         ТЗ-001 punkt 8: All implementations must match their interfaces.
         """
-        from src.interfaces.llm import IOpenAIChat
         from src.openai_chat import OpenAIChat
 
         # Check that required methods exist
@@ -37,7 +35,6 @@ class TestInterfaceCompliance:
 
         ТЗ-001 punkt 8: All implementations must match their interfaces.
         """
-        from src.interfaces.telegram import ITelegramClient
         from src.telegram_client import TelegramClient
 
         # Check that required methods exist
@@ -64,10 +61,10 @@ class TestInterfaceCompliance:
         ТЗ-001 punkt 8: Use Protocol for structural subtyping.
         """
         from src.interfaces import (
-            IOpenAIChat,
-            ITelegramClient,
             IMemoryStore,
             IMessageDeliveryTracker,
+            IOpenAIChat,
+            ITelegramClient,
         )
 
         protocols = [
@@ -113,18 +110,12 @@ class TestInterfaceCompliance:
         ТЗ-001 punkt 73: Phase 1 provides stubs for Phase 2 implementation.
         """
         # Memory stubs (ТЗ-002)
-        from src.infrastructure.memory.stub_store import (
-            InMemoryStore,
-            InMemoryWorkingMemory
-        )
-
         # Delivery tracking stub
         from src.infrastructure.delivery.stub_tracker import StubDeliveryTracker
+        from src.infrastructure.memory.stub_store import InMemoryStore, InMemoryWorkingMemory
 
         # Worker stub
-        from src.infrastructure.worker.stub_notification_manager import (
-            StubNotificationManager
-        )
+        from src.infrastructure.worker.stub_notification_manager import StubNotificationManager
 
         # All stubs should instantiate without errors
         memory_store = InMemoryStore()

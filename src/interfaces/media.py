@@ -1,8 +1,8 @@
 """Media and vision interface protocols (ТЗ-003 foundation)."""
 
-from typing import Protocol, Optional, List
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
 
 class MediaType(Enum):
@@ -28,9 +28,9 @@ class ProcessedMedia:
     media_type: MediaType
     data: bytes
     mime_type: str
-    width: Optional[int] = None
-    height: Optional[int] = None
-    metadata: Optional[dict] = None
+    width: int | None = None
+    height: int | None = None
+    metadata: dict | None = None
 
 
 class IMediaHandler(Protocol):
@@ -84,8 +84,8 @@ class IMediaHandler(Protocol):
         self,
         document_data: bytes,
         mime_type: str,
-        filename: Optional[str] = None
-    ) -> Optional[str]:
+        filename: str | None = None
+    ) -> str | None:
         """Process document (text extraction for .txt/.md).
 
         Implements ТЗ-003: text document content extraction.
@@ -104,7 +104,7 @@ class IMediaHandler(Protocol):
         self,
         video_data: bytes,
         timestamp_seconds: float = 0.0
-    ) -> Optional[ProcessedMedia]:
+    ) -> ProcessedMedia | None:
         """Extract frame from video.
 
         Deferred to later phase (ТЗ-003 notes this is not yet implemented).
@@ -149,9 +149,9 @@ class IVisionService(Protocol):
     async def create_multimodal_message(
         self,
         text: str,
-        images: List[bytes],
-        mime_types: Optional[List[str]] = None
-    ) -> "Message":
+        images: list[bytes],
+        mime_types: list[str] | None = None
+    ) -> "Message":  # noqa: F821
         """Create message with text + images.
 
         Implements ТЗ-003: multimodal content for vision models.

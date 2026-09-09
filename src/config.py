@@ -6,12 +6,10 @@ REFACTORED: No singleton pattern - use load_config() to get Config instance.
 
 from __future__ import annotations
 
-import os
-import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import tomli
 import tomli_w
@@ -110,6 +108,32 @@ class Config:
     # Worker
     worker_sleep_enabled: bool = False
     worker_sleep_timeout: int = 300
+
+    # Application timezone
+    timezone: str = "UTC"
+    _timezone_info: ZoneInfo | None = field(default=None, init=False, repr=False)
+
+    @property
+    def timezone_info(self) -> ZoneInfo:
+        """Get validated ZoneInfo instance for application timezone.
+
+        Lazily validates and caches the timezone on first access.
+
+        Returns:
+            ZoneInfo instance for the configured timezone
+
+        Raises:
+            ValueError: If timezone string is invalid
+        """
+        if self._timezone_info is None:
+            try:
+                self._timezone_info = ZoneInfo(self.timezone)
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid timezone '{self.timezone}'. Must be a valid IANA timezone "
+                    f"(e.g., 'UTC', 'Europe/Amsterdam', 'America/New_York'). Error: {e}"
+                ) from e
+        return self._timezone_info
 
     @staticmethod
     def from_toml(path: Path | str) -> Config:
@@ -228,6 +252,13 @@ class Config:
         cfg.worker_sleep_enabled = worker_cfg.get("sleep_enabled", cfg.worker_sleep_enabled)
         cfg.worker_sleep_timeout = worker_cfg.get("sleep_timeout", cfg.worker_sleep_timeout)
 
+        # Application timezone
+        app_cfg = data.get("app", {})
+        cfg.timezone = app_cfg.get("timezone", cfg.timezone)
+
+        # Validate timezone immediately on load
+        _ = cfg.timezone_info
+
         return cfg
 
 
@@ -260,6 +291,9 @@ def save_config(cfg: Config, path: Path | str = "config.toml") -> None:
     path = Path(path)
 
     data = {
+        "app": {
+            "timezone": cfg.timezone,
+        },
         "llm": {
             "model": cfg.llm.model,
             "endpoint": {
@@ -387,4 +421,4 @@ def get_config() -> Config:
 
 
 # Legacy singleton state
-_LEGACY_CONFIG: Optional[Config] = None
+_LEGACY_CONFIG: Config | None = None

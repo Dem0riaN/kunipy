@@ -4,13 +4,13 @@ Tests voice transcription and photo description functionality.
 Part of ТЗ-001 Phase 1 validation.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
-from unittest.mock import Mock, AsyncMock, MagicMock
-from pathlib import Path
 
 from src.application.media_service import MediaService
-from src.domain.models import TelegramMessage
 from src.config import Config, Endpoint, EndpointAndModel
+from src.domain.models import TelegramMessage
 
 
 @pytest.fixture

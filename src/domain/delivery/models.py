@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 from enum import Enum
 
 
@@ -28,14 +27,14 @@ class MessageDeliveryRecord:
     sent_at: datetime
 
     # Delivery tracking
-    delivered_at: Optional[datetime] = None
-    failed_at: Optional[datetime] = None
+    delivered_at: datetime | None = None
+    failed_at: datetime | None = None
     retry_count: int = 0
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     # Metadata
-    text_hash: Optional[str] = None  # For duplicate detection (punkt 18)
-    worker_id: Optional[int] = None  # Which worker sent it
+    text_hash: str | None = None  # For duplicate detection (punkt 18)
+    worker_id: int | None = None  # Which worker sent it
 
     def is_delivered(self) -> bool:
         """Check if message was delivered."""
@@ -45,7 +44,7 @@ class MessageDeliveryRecord:
         """Check if message needs retry."""
         return self.state == DeliveryState.RETRY_PENDING
 
-    def delivery_time_seconds(self) -> Optional[float]:
+    def delivery_time_seconds(self) -> float | None:
         """Calculate delivery time in seconds."""
         if self.delivered_at and self.sent_at:
             return (self.delivered_at - self.sent_at).total_seconds()

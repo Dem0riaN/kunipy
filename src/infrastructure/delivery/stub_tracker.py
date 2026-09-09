@@ -3,8 +3,7 @@
 Temporary stub until Phase 2 full implementation.
 """
 
-from typing import List, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 
 from ...domain.delivery.models import DeliveryState, MessageDeliveryRecord
 
@@ -27,14 +26,14 @@ class StubDeliveryTracker:
         self,
         chat_id: int,
         message_id: int,
-        text_hash: Optional[str] = None
+        text_hash: str | None = None
     ) -> MessageDeliveryRecord:
         """Start tracking message delivery."""
         record = MessageDeliveryRecord(
             message_id=message_id,
             chat_id=chat_id,
             state=DeliveryState.SENT,
-            sent_at=datetime.now(),
+            sent_at=datetime.now(UTC),
             text_hash=text_hash
         )
         key = self._key(chat_id, message_id)
@@ -62,7 +61,7 @@ class StubDeliveryTracker:
         if key in self._records:
             record = self._records[key]
             record.state = DeliveryState.DELIVERED
-            record.delivered_at = datetime.now()
+            record.delivered_at = datetime.now(UTC)
             return True
         return False
 
@@ -77,7 +76,7 @@ class StubDeliveryTracker:
         if key in self._records:
             record = self._records[key]
             record.state = DeliveryState.FAILED
-            record.failed_at = datetime.now()
+            record.failed_at = datetime.now(UTC)
             record.error_message = error
             return True
         return False
@@ -95,12 +94,12 @@ class StubDeliveryTracker:
 
         # Check timeout (10 seconds from ТЗ-001)
         if record.state == DeliveryState.SENT:
-            elapsed = (datetime.now() - record.sent_at).total_seconds()
+            elapsed = (datetime.now(UTC) - record.sent_at).total_seconds()
             return elapsed >= 10.0
 
         return False
 
-    async def get_pending_verifications(self) -> List[MessageDeliveryRecord]:
+    async def get_pending_verifications(self) -> list[MessageDeliveryRecord]:
         """Get all messages pending verification."""
         return [
             record for record in self._records.values()

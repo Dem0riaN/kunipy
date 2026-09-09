@@ -6,7 +6,6 @@ Extracted from app.py god object (ТЗ-001 punkt 5).
 
 import logging
 import random
-from typing import Optional
 
 from ..di import Dependencies
 from ..domain.models import TelegramMessage
@@ -37,7 +36,7 @@ class TelegramEventHandler:
             deps: Dependency injection container
         """
         self._deps = deps
-        self._current_chat_id: Optional[int] = None
+        self._current_chat_id: int | None = None
 
         # Initialize media service
         self._media_service = MediaService(
@@ -318,4 +317,3 @@ class TelegramEventHandler:
             chat: Chat data
         """
         # Could update cache or trigger reactions
-        pass

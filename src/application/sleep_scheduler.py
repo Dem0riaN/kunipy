@@ -75,7 +75,7 @@ class SleepScheduler:
         while self._running:
             try:
                 # Calculate next run time
-                now = datetime.now()
+                now = datetime.now(self._config.timezone_info)
                 next_run = now.replace(
                     hour=self._night_hour,
                     minute=0,
@@ -101,8 +101,8 @@ class SleepScheduler:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.exception(f"Sleep consolidation loop error: {e}")
+            except Exception:
+                logger.exception("Sleep consolidation loop error")
                 # Back off an hour on unexpected errors
                 await asyncio.sleep(3600)
 
@@ -114,7 +114,7 @@ class SleepScheduler:
         try:
             await self._deps.diary.sleep_consolidation()
             logger.info("Sleep consolidation completed successfully")
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(f"Sleep consolidation failed: {e}")
 
     async def trigger_manual_consolidation(self) -> None:

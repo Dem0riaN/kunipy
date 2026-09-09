@@ -4,11 +4,10 @@ Temporary in-memory implementation until Phase 2.
 Implements IMemoryStore protocol with minimal functionality.
 """
 
-from typing import List, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 
-from ...interfaces.memory import IMemoryStore, IWorkingMemory, MemoryScope
 from ...domain.memory.models import MemoryPiece, WorkingMemoryContext
+from ...interfaces.memory import MemoryScope
 
 
 class InMemoryStore:
@@ -26,7 +25,7 @@ class InMemoryStore:
         self._memories[piece.id] = piece
         return piece.id
 
-    async def get_memory(self, memory_id: str) -> Optional[MemoryPiece]:
+    async def get_memory(self, memory_id: str) -> MemoryPiece | None:
         """Retrieve memory by ID."""
         return self._memories.get(memory_id)
 
@@ -46,13 +45,13 @@ class InMemoryStore:
 
     async def search_memory(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         scope: MemoryScope,
-        user_id: Optional[str] = None,
-        chat_id: Optional[str] = None,
+        user_id: str | None = None,
+        chat_id: str | None = None,
         limit: int = 10,
         min_confidence: float = -1.0
-    ) -> List[MemoryPiece]:
+    ) -> list[MemoryPiece]:
         """Search memory by embedding similarity.
 
         Stub implementation: returns empty list.
@@ -63,18 +62,18 @@ class InMemoryStore:
     async def search_by_user(
         self,
         user_id: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         limit: int = 10
-    ) -> List[MemoryPiece]:
+    ) -> list[MemoryPiece]:
         """Search user-specific memory."""
         return []
 
     async def search_by_chat(
         self,
         chat_id: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         limit: int = 10
-    ) -> List[MemoryPiece]:
+    ) -> list[MemoryPiece]:
         """Search chat-specific memory."""
         return []
 
@@ -105,7 +104,7 @@ class InMemoryWorkingMemory:
                 user_id=user_id,
                 chat_id=chat_id,
                 channel="telegram",  # Default
-                last_interaction=datetime.now()
+                last_interaction=datetime.now(UTC)
             )
         return self._contexts[key]
 
@@ -135,7 +134,7 @@ class InMemoryWorkingMemory:
                 id=f"promise_{len(context.promises)}",
                 content=promise,
                 to_user_id=user_id,
-                created_at=datetime.now()
+                created_at=datetime.now(UTC)
             )
         )
 
@@ -153,7 +152,7 @@ class InMemoryWorkingMemory:
                 id=f"plan_{len(context.plans)}",
                 description=plan.get("description", ""),
                 steps=plan.get("steps", []),
-                created_at=datetime.now()
+                created_at=datetime.now(UTC)
             )
         )
 

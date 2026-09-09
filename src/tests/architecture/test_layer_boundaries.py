@@ -6,6 +6,7 @@ Prevents forbidden dependencies between layers.
 
 import ast
 from pathlib import Path
+
 import pytest
 
 
@@ -23,9 +24,8 @@ def get_imports_from_file(file_path: Path) -> set[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.add(alias.name.split('.')[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                imports.add(node.module.split('.')[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module.split('.')[0])
 
     return imports
 

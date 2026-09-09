@@ -1,13 +1,11 @@
 """Telegram delivery verification service (ТЗ-001 punkt 13)."""
 
-from typing import Optional
-from datetime import datetime, timedelta
 import logging
+from datetime import UTC, datetime
 
-from src.interfaces.telegram import ITelegramClient
-from src.interfaces.delivery import DeliveryState
 from src.domain.delivery.models import MessageDeliveryRecord
-
+from src.interfaces.delivery import DeliveryState
+from src.interfaces.telegram import ITelegramClient
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +60,7 @@ class TelegramMessageDeliveryChecker:
             if is_delivered:
                 return DeliveryState.DELIVERED
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.warning(
                 f"Delivery check failed for msg {record.message_id} "
                 f"in chat {record.chat_id}: {e}"
@@ -70,7 +68,8 @@ class TelegramMessageDeliveryChecker:
             # Don't mark as failed yet, might be transient
 
         # ТЗ-001 punkt 14: Apply 10-second timeout rule
-        elapsed = (datetime.now() - record.sent_at).total_seconds()
+        # Use UTC for technical timestamp comparison
+        elapsed = (datetime.now(UTC) - record.sent_at).total_seconds()
 
         if elapsed >= self.DELIVERY_TIMEOUT_SECONDS:
             # Timeout reached, mark for retry
@@ -112,7 +111,7 @@ class TelegramMessageDeliveryChecker:
             message_ids = [msg.message_id for msg in history]
             return message_id in message_ids
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(f"Failed to get chat history: {e}")
             return False
 

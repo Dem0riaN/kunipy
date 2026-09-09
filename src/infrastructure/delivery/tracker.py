@@ -2,15 +2,12 @@
 
 import asyncio
 import logging
-from typing import Optional, List
-from datetime import datetime
-from pathlib import Path
+from datetime import UTC, datetime
 
-from src.interfaces.delivery import IMessageDeliveryTracker, DeliveryState
 from src.domain.delivery.models import MessageDeliveryRecord
 from src.infrastructure.delivery.storage import MessageDeliveryStorage
 from src.infrastructure.delivery.telegram_checker import TelegramMessageDeliveryChecker
-
+from src.interfaces.delivery import DeliveryState
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +37,7 @@ class MessageDeliveryTracker:
         """
         self._storage = storage
         self._checker = checker
-        self._verification_task: Optional[asyncio.Task] = None
+        self._verification_task: asyncio.Task | None = None
         self._running = False
 
     async def start(self) -> None:
@@ -71,7 +68,7 @@ class MessageDeliveryTracker:
         self,
         chat_id: int,
         message_id: int,
-        text_hash: Optional[str] = None
+        text_hash: str | None = None
     ) -> MessageDeliveryRecord:
         """Start tracking message delivery.
 
@@ -89,7 +86,7 @@ class MessageDeliveryTracker:
             message_id=message_id,
             chat_id=chat_id,
             state=DeliveryState.SENT,
-            sent_at=datetime.now(),
+            sent_at=datetime.now(UTC),
             text_hash=text_hash
         )
 
@@ -123,7 +120,7 @@ class MessageDeliveryTracker:
             record.state = new_state
 
             if new_state == DeliveryState.DELIVERED:
-                record.delivered_at = datetime.now()
+                record.delivered_at = datetime.now(UTC)
             elif new_state == DeliveryState.RETRY_PENDING:
                 # Don't increment retry_count yet - that happens on actual retry
                 pass
@@ -156,7 +153,7 @@ class MessageDeliveryTracker:
             return False
 
         record.state = DeliveryState.DELIVERED
-        record.delivered_at = datetime.now()
+        record.delivered_at = datetime.now(UTC)
 
         await self._storage.save_record(record)
 
@@ -187,7 +184,7 @@ class MessageDeliveryTracker:
             return False
 
         record.state = DeliveryState.FAILED
-        record.failed_at = datetime.now()
+        record.failed_at = datetime.now(UTC)
         record.error_message = error
 
         await self._storage.save_record(record)
@@ -214,7 +211,7 @@ class MessageDeliveryTracker:
         """
         return self._checker.should_retry(record)
 
-    async def get_pending_verifications(self) -> List[MessageDeliveryRecord]:
+    async def get_pending_verifications(self) -> list[MessageDeliveryRecord]:
         """Get all messages pending verification.
 
         Returns:
@@ -278,10 +275,9 @@ class MessageDeliveryTracker:
                     for record in pending:
                         try:
                             await self.check_delivery(record)
-                        except Exception as e:
-                            logger.error(
-                                f"Error checking delivery for msg {record.message_id}: {e}",
-                                exc_info=True
+                        except Exception:
+                            logger.exception(
+                                f"Error checking delivery for msg {record.message_id}"
                             )
 
                 # Sleep between checks
@@ -289,6 +285,6 @@ class MessageDeliveryTracker:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Error in verification loop: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Error in verification loop")
                 await asyncio.sleep(5.0)

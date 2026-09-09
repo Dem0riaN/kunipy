@@ -5,6 +5,7 @@ Enforces Single Responsibility Principle (ТЗ-001 punkt 4-11).
 
 import ast
 from pathlib import Path
+
 import pytest
 
 
@@ -34,7 +35,7 @@ def count_file_lines(file_path: Path) -> int:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
-    except:
+    except OSError:
         return 0
 
     count = 0
@@ -55,10 +56,9 @@ def get_class_lines(file_path: Path, class_name: str) -> int:
         return 0
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == class_name:
+        if isinstance(node, ast.ClassDef) and node.name == class_name and hasattr(node, 'end_lineno') and node.end_lineno:
             # end_lineno - lineno gives approximate class size
-            if hasattr(node, 'end_lineno') and node.end_lineno:
-                return node.end_lineno - node.lineno
+            return node.end_lineno - node.lineno
 
     return 0
 
@@ -182,7 +182,7 @@ class TestNoGodObjects:
         ТЗ-001 punkt 5: telegram_client.py (800+ lines) must be split.
         """
         telegram_client = src_dir / "telegram_client.py"
-        telegram_service = src_dir / "infrastructure" / "telegram_message_service.py"
+        _ = src_dir / "infrastructure" / "telegram_message_service.py"  # Future split
 
         if not telegram_client.exists():
             pytest.skip("telegram_client.py not found")

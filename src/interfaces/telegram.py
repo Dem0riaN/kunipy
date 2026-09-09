@@ -1,7 +1,6 @@
 """Telegram interface protocols."""
 
-from typing import Protocol, Optional, List, Dict, Any, TYPE_CHECKING
-from datetime import datetime
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from src.domain.models import TelegramMessage
@@ -18,7 +17,7 @@ class ITelegramClient(Protocol):
         self,
         chat_id: int,
         text: str,
-        reply_to: Optional[int] = None,
+        reply_to: int | None = None,
         disable_notification: bool = False
     ) -> int:
         """Send text message via TDLib.
@@ -70,7 +69,7 @@ class ITelegramClient(Protocol):
         """
         ...
 
-    async def get_file_path(self, file_id: int) -> Optional[str]:
+    async def get_file_path(self, file_id: int) -> str | None:
         """Get local path of downloaded file.
 
         Args:
@@ -81,7 +80,7 @@ class ITelegramClient(Protocol):
         """
         ...
 
-    async def download_file(self, file_id: int) -> Optional[bytes]:
+    async def download_file(self, file_id: int) -> bytes | None:
         """Download file from Telegram.
 
         Args:
@@ -92,7 +91,7 @@ class ITelegramClient(Protocol):
         """
         ...
 
-    async def get_chat(self, chat_id: int) -> Optional[Dict[str, Any]]:
+    async def get_chat(self, chat_id: int) -> dict[str, Any] | None:
         """Get chat information.
 
         Args:
@@ -107,7 +106,7 @@ class ITelegramClient(Protocol):
         self,
         chat_id: int,
         message_id: int
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Get message by ID.
 
         Args:
@@ -124,7 +123,7 @@ class ITelegramClient(Protocol):
         chat_id: int,
         from_message_id: int,
         limit: int
-    ) -> List["TelegramMessage"]:
+    ) -> list["TelegramMessage"]:
         """Get chat history for delivery verification.
 
         Args:
@@ -149,8 +148,8 @@ class ITelegramMessageService(Protocol):
         self,
         chat_id: int,
         text: str,
-        reply_to: Optional[int] = None
-    ) -> "MessageDeliveryRecord":
+        reply_to: int | None = None
+    ) -> "MessageDeliveryRecord":  # noqa: F821
         """Send message with delivery verification.
 
         Implements ТЗ-001 punkt 12-18 delivery tracking.
@@ -190,7 +189,7 @@ class ITelegramMessageService(Protocol):
         chat_id: int,
         text: str,
         max_retries: int = 3
-    ) -> Optional[int]:
+    ) -> int | None:
         """Send message with automatic retry on failure.
 
         Args:

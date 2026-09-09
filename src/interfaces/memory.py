@@ -1,9 +1,9 @@
 """Memory interface protocols (ТЗ-002 foundation)."""
 
-from typing import Protocol, List, Optional, Dict, Any
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 
 class MemoryScope(Enum):
@@ -50,22 +50,22 @@ class MemoryPiece:
     updated_at: datetime
     last_used: datetime
     usage_count: int
-    embedding: List[float]
+    embedding: list[float]
     scope: MemoryScope
 
     # Context information
-    user_id: Optional[str] = None
-    chat_id: Optional[str] = None
-    channel: Optional[str] = None  # "telegram", "desktop", "voice"
+    user_id: str | None = None
+    chat_id: str | None = None
+    channel: str | None = None  # "telegram", "desktop", "voice"
 
     # Provenance (ТЗ-002 punkt 21)
-    source_message_ids: List[str] = field(default_factory=list)
-    source_type: Optional[str] = None  # "conversation", "consolidation", "migration"
+    source_message_ids: list[str] = field(default_factory=list)
+    source_type: str | None = None  # "conversation", "consolidation", "migration"
 
     # Metadata
-    retrieval_cues: List[str] = field(default_factory=list)
-    entities: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    retrieval_cues: list[str] = field(default_factory=list)
+    entities: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,20 +79,20 @@ class WorkingMemoryContext:
     channel: str
 
     # Current state
-    current_topic: Optional[str] = None
-    conversation_summary: Optional[str] = None
+    current_topic: str | None = None
+    conversation_summary: str | None = None
 
     # Pending items
-    pending_questions: List[str] = field(default_factory=list)
-    promises: List[Dict[str, Any]] = field(default_factory=list)
-    plans: List[Dict[str, Any]] = field(default_factory=list)
+    pending_questions: list[str] = field(default_factory=list)
+    promises: list[dict[str, Any]] = field(default_factory=list)
+    plans: list[dict[str, Any]] = field(default_factory=list)
 
     # Temporal state
-    last_interaction: Optional[datetime] = None
-    emotion_state: Optional[str] = None
+    last_interaction: datetime | None = None
+    emotion_state: str | None = None
 
     # Context metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class IMemoryStore(Protocol):
@@ -112,7 +112,7 @@ class IMemoryStore(Protocol):
         """
         ...
 
-    async def get_memory(self, memory_id: str) -> Optional[MemoryPiece]:
+    async def get_memory(self, memory_id: str) -> MemoryPiece | None:
         """Retrieve memory by ID.
 
         Args:
@@ -147,13 +147,13 @@ class IMemoryStore(Protocol):
 
     async def search_memory(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         scope: MemoryScope,
-        user_id: Optional[str] = None,
-        chat_id: Optional[str] = None,
+        user_id: str | None = None,
+        chat_id: str | None = None,
         limit: int = 10,
         min_confidence: float = -1.0
-    ) -> List[MemoryPiece]:
+    ) -> list[MemoryPiece]:
         """Search memory by embedding similarity.
 
         Implements semantic search with scope filtering.
@@ -174,9 +174,9 @@ class IMemoryStore(Protocol):
     async def search_by_user(
         self,
         user_id: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         limit: int = 10
-    ) -> List[MemoryPiece]:
+    ) -> list[MemoryPiece]:
         """Search user-specific memory.
 
         Args:
@@ -192,9 +192,9 @@ class IMemoryStore(Protocol):
     async def search_by_chat(
         self,
         chat_id: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         limit: int = 10
-    ) -> List[MemoryPiece]:
+    ) -> list[MemoryPiece]:
         """Search chat-specific memory.
 
         Args:
@@ -235,7 +235,7 @@ class IWorkingMemory(Protocol):
         self,
         user_id: str,
         chat_id: str,
-        updates: Dict[str, Any]
+        updates: dict[str, Any]
     ) -> None:
         """Update working memory context.
 
@@ -265,7 +265,7 @@ class IWorkingMemory(Protocol):
         self,
         user_id: str,
         chat_id: str,
-        plan: Dict[str, Any]
+        plan: dict[str, Any]
     ) -> None:
         """Add plan to working memory.
 

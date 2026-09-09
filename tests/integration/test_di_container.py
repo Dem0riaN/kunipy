@@ -4,13 +4,13 @@ Tests that all dependencies are properly wired and protocols are satisfied.
 Part of ТЗ-001 Phase 1 validation.
 """
 
-import asyncio
-import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from src.config import Config, Endpoint, EndpointAndModel, LockdownMode
-from src.di.container import create_dependencies, Dependencies
+from src.di.container import Dependencies, create_dependencies
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ async def test_create_dependencies_with_telegram(test_config):
             assert deps.telegram_client is not None
             assert deps.telegram_message_service is not None
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError, OSError) as e:
             # Expected if TDLib not available
             pytest.skip(f"Telegram not available: {e}")
 
@@ -166,7 +166,6 @@ async def test_dependencies_config_isolation(test_config):
 @pytest.mark.asyncio
 async def test_notification_manager_protocol():
     """Test that notification manager satisfies INotificationManager protocol."""
-    from src.interfaces.worker import INotificationManager
 
     with TemporaryDirectory() as tmpdir:
         working_dir = Path(tmpdir)

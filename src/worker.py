@@ -8,12 +8,13 @@ import asyncio
 import json
 import logging
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .character import build_system_prompt
 from .config import Config
 from .diary import Diary
 from .interfaces.worker import INotificationManager
+from .notification_manager import Notification
 from .openai_chat import Message, OpenAIChat
 from .telegram_client import TelegramClient
 from .tools import create_default_tools
@@ -38,10 +39,10 @@ class Worker:
         name: str,
         openai: OpenAIChat,
         notification_manager: INotificationManager,
-        telegram: Optional[TelegramClient],
-        diary: Optional[Diary],
+        telegram: TelegramClient | None,
+        diary: Diary | None,
         config: Config,
-        working_memory_context: Optional[str] = None,
+        working_memory_context: str | None = None,
     ):
         """Initialize worker with dependencies.
 
@@ -67,7 +68,7 @@ class Worker:
         self._wake_event = asyncio.Event()
 
         # Per-chat conversation history
-        self.temporary_context: Dict[int, List[Message]] = {}
+        self.temporary_context: dict[int, list[Message]] = {}
 
     async def run(self) -> None:
         """Main worker loop."""
@@ -89,8 +90,8 @@ class Worker:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.exception(f"Worker {self.name} error: {e}")
+            except Exception:
+                logger.exception(f"Worker {self.name} error")
                 await asyncio.sleep(1)
 
         logger.info(f"Worker {self.name} stopped")
@@ -113,8 +114,8 @@ class Worker:
 
         try:
             final_text = await self._generate_response(notification, chat_id)
-        except Exception as e:
-            logger.exception(f"Worker {self.name} failed to generate response: {e}")
+        except Exception:
+            logger.exception(f"Worker {self.name} failed to generate response")
             return
 
         # Fallback: if LLM produced text but didn't call send_message tool
@@ -124,12 +125,12 @@ class Worker:
                 await _simulate_typing(self.telegram, chat_id, final_text)
                 await self.telegram.send_message(chat_id, final_text)
                 logger.info(f"Worker {self.name} sent fallback response")
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
                 logger.error(f"Failed to send fallback message: {e}")
 
     async def _generate_response(
         self, notification: Notification, chat_id: int
-    ) -> Optional[str]:
+    ) -> str | None:
         """Run LLM tool-calling loop.
 
         Returns:
@@ -181,7 +182,7 @@ class Worker:
                 break
 
             choice = response.choices[0]
-            finish_reason = choice.get("finish_reason")
+            _ = choice.get("finish_reason")  # Used by upstream, not here
             message = choice.get("message", {})
             content = message.get("content", "")
             tool_calls = message.get("tool_calls", [])
@@ -216,7 +217,7 @@ class Worker:
                         args = json.loads(args_str) if isinstance(args_str, str) else args_str
                         result = await tools.call(name, args)
                         result_str = str(result) if result is not None else ""
-                    except Exception as e:
+                    except (ValueError, KeyError, TypeError, RuntimeError) as e:
                         result_str = f"Error: {e}"
                         logger.error(f"Tool {name} failed: {e}")
 
@@ -274,7 +275,7 @@ class Worker:
                     self._wake_event.wait(),
                     timeout=self.config.worker_sleep_timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
             self._sleeping = False
@@ -286,7 +287,7 @@ class Worker:
             self._wake_event.set()
 
     def _log_assistant_turn(
-        self, chat_id: int, content: str, tool_calls: Optional[List[Dict[str, Any]]]
+        self, chat_id: int, content: str, tool_calls: list[dict[str, Any]] | None
     ) -> None:
         """Log assistant's thinking and tool calls."""
         prefix = f"[chat_{chat_id}]"
@@ -307,8 +308,8 @@ class Worker:
     def _log_tool_results(
         self,
         chat_id: int,
-        tool_calls: Optional[List[Dict[str, Any]]],
-        tool_results: List[Message],
+        tool_calls: list[dict[str, Any]] | None,
+        tool_results: list[Message],
     ) -> None:
         """Log tool execution results."""
         prefix = f"[chat_{chat_id}]"

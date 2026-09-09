@@ -15,13 +15,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .config import Config, load_config
-from .di.container import create_dependencies
 from .application.lifecycle import ApplicationLifecycle
-from .application.telegram_handler import TelegramEventHandler
 from .application.proactive_service import ProactiveMessageService
 from .application.sleep_scheduler import SleepScheduler
+from .application.telegram_handler import TelegramEventHandler
 from .application.worker_orchestrator import WorkerOrchestrator
+from .config import Config, load_config
+from .di.container import create_dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,11 @@ class App:
         self._deps: Optional = None
 
         # Service orchestrators
-        self._lifecycle: Optional[ApplicationLifecycle] = None
-        self._telegram_handler: Optional[TelegramEventHandler] = None
-        self._worker_orchestrator: Optional[WorkerOrchestrator] = None
-        self._proactive_service: Optional[ProactiveMessageService] = None
-        self._sleep_scheduler: Optional[SleepScheduler] = None
+        self._lifecycle: ApplicationLifecycle | None = None
+        self._telegram_handler: TelegramEventHandler | None = None
+        self._worker_orchestrator: WorkerOrchestrator | None = None
+        self._proactive_service: ProactiveMessageService | None = None
+        self._sleep_scheduler: SleepScheduler | None = None
 
     async def initialize(self) -> None:
         """Initialize all components via dependency injection."""
@@ -159,6 +159,7 @@ class App:
     async def _start_proxy_server(self) -> None:
         """Start OpenAI-compatible proxy server."""
         import uvicorn
+
         from .proxy_server import create_proxy_app
 
         app = create_proxy_app(self._deps.diary)
@@ -198,7 +199,7 @@ class App:
                     continue
 
                 # Build summary
-                summary = f"Conversation dump at {datetime.now().isoformat()}\n"
+                summary = f"Conversation dump at {datetime.now(self._config.timezone_info).isoformat()}\n"
                 for msg in messages:
                     if hasattr(msg, "role") and hasattr(msg, "content"):
                         summary += f"{msg.role}: {msg.content[:200]}\n"
@@ -228,8 +229,8 @@ async def main() -> None:
         await app.start()
     except KeyboardInterrupt:
         logger.info("Interrupted")
-    except Exception as e:
-        logger.exception(f"Fatal error: {e}")
+    except Exception:
+        logger.exception("Fatal error")
         sys.exit(1)
 
 

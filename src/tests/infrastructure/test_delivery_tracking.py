@@ -1,17 +1,17 @@
 """Tests for message delivery tracking (ТЗ-001 punkt 66)."""
 
-import pytest
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
 
-from src.infrastructure.delivery.storage import MessageDeliveryStorage
-from src.infrastructure.delivery.tracker import MessageDeliveryTracker
-from src.infrastructure.delivery.telegram_checker import TelegramMessageDeliveryChecker
-from src.interfaces.delivery import DeliveryState
+import pytest
+
 from src.domain.delivery.models import MessageDeliveryRecord
 from src.domain.models import TelegramMessage
+from src.infrastructure.delivery.storage import MessageDeliveryStorage
+from src.infrastructure.delivery.telegram_checker import TelegramMessageDeliveryChecker
+from src.infrastructure.delivery.tracker import MessageDeliveryTracker
+from src.interfaces.delivery import DeliveryState
 
 
 class MockTelegramClient:
@@ -26,7 +26,7 @@ class MockTelegramClient:
         chat_id: int,
         from_message_id: int,
         limit: int
-    ) -> List[TelegramMessage]:
+    ) -> list[TelegramMessage]:
         """Mock chat history retrieval."""
         history = self.chat_histories.get(chat_id, [])
 
@@ -51,7 +51,7 @@ class MockTelegramClient:
             chat_id=chat_id,
             user_id=0,  # Bot's message
             text="Test message",
-            timestamp=datetime.now()
+            timestamp=datetime.now(UTC)
         )
         self.chat_histories[chat_id].append(msg)
 
@@ -171,7 +171,7 @@ class TestDeliveryTracking:
         )
 
         # Backdate to 11 seconds ago
-        record.sent_at = datetime.now() - timedelta(seconds=11)
+        record.sent_at = datetime.now(UTC) - timedelta(seconds=11)
         await storage.save_record(record)
 
         # Check delivery - should trigger retry
@@ -212,7 +212,7 @@ class TestDeliveryTracking:
 
         # Wait and check outside window
         # (For testing, we'll modify the record timestamp)
-        record1.sent_at = datetime.now() - timedelta(seconds=61)
+        record1.sent_at = datetime.now(UTC) - timedelta(seconds=61)
         await storage.save_record(record1)
 
         is_duplicate = await tracker.is_duplicate(
@@ -264,7 +264,7 @@ class TestDeliveryTracking:
             message_id=600,
             chat_id=300,
             state=DeliveryState.SENT,
-            sent_at=datetime.now(),
+            sent_at=datetime.now(UTC),
             text_hash="abc123"
         )
         await storage1.save_record(record)
@@ -367,7 +367,7 @@ class TestDeliveryTracking:
         chat_id = 600
         message_id = 900
 
-        record = await tracker.track_message(
+        _ = await tracker.track_message(
             chat_id=chat_id,
             message_id=message_id
         )
@@ -400,8 +400,8 @@ class TestDeliveryTracking:
             message_id=1000,
             chat_id=700,
             state=DeliveryState.DELIVERED,
-            sent_at=datetime.now() - timedelta(days=8),
-            delivered_at=datetime.now() - timedelta(days=8)
+            sent_at=datetime.now(UTC) - timedelta(days=8),
+            delivered_at=datetime.now(UTC) - timedelta(days=8)
         )
         await storage.save_record(old_record)
 
@@ -410,8 +410,8 @@ class TestDeliveryTracking:
             message_id=1001,
             chat_id=700,
             state=DeliveryState.DELIVERED,
-            sent_at=datetime.now() - timedelta(days=1),
-            delivered_at=datetime.now() - timedelta(days=1)
+            sent_at=datetime.now(UTC) - timedelta(days=1),
+            delivered_at=datetime.now(UTC) - timedelta(days=1)
         )
         await storage.save_record(recent_record)
 
@@ -437,22 +437,22 @@ class TestDeliveryTracking:
             message_id=1100,
             chat_id=800,
             state=DeliveryState.SENT,
-            sent_at=datetime.now()
+            sent_at=datetime.now(UTC)
         ))
 
         await storage.save_record(MessageDeliveryRecord(
             message_id=1101,
             chat_id=800,
             state=DeliveryState.DELIVERED,
-            sent_at=datetime.now(),
-            delivered_at=datetime.now()
+            sent_at=datetime.now(UTC),
+            delivered_at=datetime.now(UTC)
         ))
 
         await storage.save_record(MessageDeliveryRecord(
             message_id=1102,
             chat_id=800,
             state=DeliveryState.SENT,
-            sent_at=datetime.now()
+            sent_at=datetime.now(UTC)
         ))
 
         # Query pending

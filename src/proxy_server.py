@@ -26,9 +26,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 from fastapi import FastAPI, Request
@@ -55,7 +55,7 @@ def _resolve_upstream(config: Config) -> EndpointAndModel:
     return config.llm
 
 
-def _build_proxy_tools(diary: Optional[Diary], openai: OpenAIChat, config: Config) -> OpenAITools:
+def _build_proxy_tools(diary: Diary | None, openai: OpenAIChat, config: Config) -> OpenAITools:
     tools = OpenAITools()
     if diary is not None:
         tools.insert(create_ask_tool(diary, openai))
@@ -67,10 +67,10 @@ def _build_proxy_tools(diary: Optional[Diary], openai: OpenAIChat, config: Confi
 def _log_request(name: str, payload: Any) -> None:
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         path = LOG_DIR / f"{ts}_{name}.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    except Exception as e:
+    except (OSError, ValueError) as e:
         logger.debug(f"Failed to write proxy log: {e}")
 
 
@@ -78,11 +78,11 @@ def _save_last_query(payload: Any) -> None:
     try:
         LAST_QUERY_PATH.parent.mkdir(parents=True, exist_ok=True)
         LAST_QUERY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    except Exception as e:
+    except (OSError, ValueError) as e:
         logger.debug(f"Failed to write last_query.json: {e}")
 
 
-def create_proxy_app(diary: Optional[Diary]) -> FastAPI:
+def create_proxy_app(diary: Diary | None) -> FastAPI:
     """Build the FastAPI app implementing the proxy server."""
     app = FastAPI(title="kunipy proxy")
 
@@ -104,7 +104,7 @@ def create_proxy_app(diary: Optional[Diary]) -> FastAPI:
         working_memory_text = str(wm.get("things_to_remember") or "")
         system_prompt = build_system_prompt(config, working_memory_text=working_memory_text)
 
-        messages: List[Message] = []
+        messages: list[Message] = []
         for m in client_messages:
             role = m.get("role", "user")
             if role == "system":
@@ -150,7 +150,7 @@ def create_proxy_app(diary: Optional[Diary]) -> FastAPI:
         response_payload = {
             "id": "chatcmpl-kunipy-proxy",
             "object": "chat.completion",
-            "created": int(datetime.now().timestamp()),
+            "created": int(datetime.now(UTC).timestamp()),
             "model": body.get("model", upstream_endpoint.model),
             "choices": [{
                 "index": 0,
@@ -200,13 +200,12 @@ def create_proxy_app(diary: Optional[Diary]) -> FastAPI:
 
         body = await request.body()
 
-        async with aiohttp.ClientSession() as session:
-            async with session.request(request.method, url, data=body, headers=headers) as resp:
-                content = await resp.read()
-                return Response(
-                    content=content,
-                    status_code=resp.status,
-                    media_type=resp.headers.get("Content-Type", "application/json"),
-                )
+        async with aiohttp.ClientSession() as session, session.request(request.method, url, data=body, headers=headers) as resp:
+            content = await resp.read()
+            return Response(
+                content=content,
+                status_code=resp.status,
+                media_type=resp.headers.get("Content-Type", "application/json"),
+            )
 
     return app

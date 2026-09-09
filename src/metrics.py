@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator, Optional
 
-from prometheus_client import CollectorRegistry, Counter, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ _current_function: contextvars.ContextVar[str] = contextvars.ContextVar("kunipy_
 
 
 @contextmanager
-def breadcrumbs(chat: Optional[str] = None, function: Optional[str] = None) -> Iterator[None]:
+def breadcrumbs(chat: str | None = None, function: str | None = None) -> Iterator[None]:
     """Annotate the current async context with a chat/function label for the
     duration of the `with` block, so any `record_usage()` call made inside
     (even several layers down the call stack) picks it up automatically.

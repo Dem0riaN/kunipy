@@ -5,10 +5,10 @@ Part of ТЗ-001 Phase 1 validation.
 """
 
 import asyncio
-import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, AsyncMock, patch
+
+import pytest
 
 from src.app import App
 from src.config import Config, Endpoint, EndpointAndModel, LockdownMode
@@ -90,7 +90,7 @@ async def test_app_start_stop_lifecycle(minimal_config):
         # Wait for start task to complete
         try:
             await asyncio.wait_for(start_task, timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             start_task.cancel()
 
 
@@ -103,7 +103,7 @@ async def test_app_creates_working_directory(minimal_config):
         # Directory doesn't exist yet
         assert not working_dir.exists()
 
-        app = App(config=minimal_config, working_dir=str(working_dir))
+        _ = App(config=minimal_config, working_dir=str(working_dir))
 
         # After initialization, directory should exist
         assert working_dir.exists()
@@ -129,7 +129,7 @@ async def test_app_with_telegram_disabled(minimal_config):
 
         try:
             await asyncio.wait_for(start_task, timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             start_task.cancel()
 
 
@@ -178,7 +178,7 @@ async def test_app_worker_orchestrator_integration(minimal_config):
 
         try:
             await asyncio.wait_for(start_task, timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             start_task.cancel()
 
 
@@ -200,7 +200,7 @@ async def test_app_stop_idempotent(minimal_config):
 
         try:
             await asyncio.wait_for(start_task, timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             start_task.cancel()
 
 
@@ -240,7 +240,7 @@ async def test_app_sleep_scheduler_integration(minimal_config):
 
         try:
             await asyncio.wait_for(start_task, timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             start_task.cancel()
 
 
@@ -274,7 +274,7 @@ async def test_app_context_dumping_on_shutdown(minimal_config):
 
         try:
             await asyncio.wait_for(start_task, timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             start_task.cancel()
 
 

@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any
 
 import numpy as np
 
@@ -27,11 +28,11 @@ class DiaryEntry:
     """A single diary entry with metadata."""
     id: str
     text: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     body: str = ""
 
     @property
-    def embedding(self) -> Optional[np.ndarray]:
+    def embedding(self) -> np.ndarray | None:
         """Get embedding vector from metadata."""
         emb = self.metadata.get("embedding")
         if emb is not None:
@@ -79,7 +80,7 @@ class Diary:
         diary_dir: str | Path,
         openai_chat: OpenAIChat,
         config: Config,
-        embedding_model: Optional[str] = None,
+        embedding_model: str | None = None,
     ):
         """Initialize diary with dependencies.
 
@@ -94,10 +95,10 @@ class Diary:
         self.openai = openai_chat
         self.config = config  # Store config for settings access
         self.embedding_model = embedding_model or config.embedding.model
-        self._cache: Optional[Dict[str, DiaryEntry]] = None
+        self._cache: dict[str, DiaryEntry] | None = None
         self._lock = asyncio.Lock()
 
-    async def _load_cache(self) -> Dict[str, DiaryEntry]:
+    async def _load_cache(self) -> dict[str, DiaryEntry]:
         """Lazy load all diary entries into memory."""
         if self._cache is not None:
             return self._cache
@@ -113,7 +114,7 @@ class Diary:
                     content = file_path.read_text(encoding="utf-8")
                     entry = DiaryEntry.from_file_content(file_id, content)
                     cache[file_id] = entry
-                except Exception as e:
+                except (ValueError, KeyError, TypeError, OSError) as e:
                     logger.error(f"Failed to load diary entry {file_id}: {e}")
 
             self._cache = cache
@@ -125,9 +126,9 @@ class Diary:
         query_vector: np.ndarray,
         max_entries: int = 5,
         confidence_factor: float = 0.01,
-        min_relatedness: Optional[float] = None,
-        filter_fn: Optional[Callable[[DiaryEntry], bool]] = None,
-    ) -> List[tuple[DiaryEntry, float]]:
+        min_relatedness: float | None = None,
+        filter_fn: Callable[[DiaryEntry], bool] | None = None,
+    ) -> list[tuple[DiaryEntry, float]]:
         """Query diary entries by embedding similarity.
 
         REFACTORED: Uses self.config instead of get_config().
@@ -177,13 +178,13 @@ class Diary:
                 return existing[0][0].id
 
         # Create new entry
-        entry_id = f"entry_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
+        entry_id = f"entry_{datetime.now(self.config.timezone_info).strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
         entry = DiaryEntry(
             id=entry_id,
             body=text,
             metadata={
                 "confidence": confidence,
-                "last_used": datetime.now().isoformat(),
+                "last_used": datetime.now(self.config.timezone_info).isoformat(),
                 "usage_count": 0,
             }
         )

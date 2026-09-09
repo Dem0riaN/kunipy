@@ -5,12 +5,11 @@ using configured LLM endpoints (audio-to-text and vision).
 """
 
 import logging
-from typing import Optional
 
+from ..config import Config
 from ..domain.models import TelegramMessage
 from ..interfaces.llm import IOpenAIChat
 from ..interfaces.telegram import ITelegramClient
-from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +86,7 @@ class MediaService:
 
             return f"[voice message] {text}"
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(f"Voice transcription error: {e}")
             return ""
 
@@ -137,6 +136,6 @@ class MediaService:
             )
             return description or ""
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(f"Photo description error: {e}")
             return ""

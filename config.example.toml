@@ -4,6 +4,12 @@
 # GENERAL SETTINGS
 # ============================================================
 
+[app]
+# Временная зона приложения (IANA timezone)
+# Application timezone (IANA timezone identifier)
+# Examples: "UTC", "Europe/Amsterdam", "Europe/Moscow", "America/New_York", "Asia/Tokyo"
+timezone = "UTC"
+
 [general]
 # Имя персонажа (как вас представлять)
 # Character name (how to introduce yourself)

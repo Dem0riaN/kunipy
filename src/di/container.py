@@ -4,20 +4,26 @@ Replaces singleton pattern with explicit dependency graph.
 Based on C++ kuni Init struct pattern.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
 
 from ..config import Config
+
+if TYPE_CHECKING:
+    from ..diary import Diary
+
 from ..interfaces import (
-    IOpenAIChat,
     IEmbeddingProvider,
-    ITelegramClient,
-    ITelegramMessageService,
     IMemoryStore,
-    IWorkingMemory,
     IMessageDeliveryTracker,
     INotificationManager,
+    IOpenAIChat,
+    ITelegramClient,
+    ITelegramMessageService,
+    IWorkingMemory,
 )
 
 
@@ -53,7 +59,7 @@ class Dependencies:
     notification_manager: INotificationManager
 
     # Legacy components (to be refactored)
-    diary: Optional["Diary"] = None  # Will be refactored to use IMemoryStore
+    diary: Diary | None = None  # Will be refactored to use IMemoryStore
 
 
 async def create_dependencies(working_dir: Path, config: Config) -> Dependencies:
@@ -78,13 +84,13 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
         >>> worker = Worker(deps)
     """
     # Import here to avoid circular dependencies
-    from ..openai_chat import OpenAIChat
-    from ..telegram_client import TelegramClient
     from ..diary import Diary
 
     # Stub implementations for worker management (replaced in Phase 2)
     from ..infrastructure.memory.stub_store import InMemoryStore, InMemoryWorkingMemory
     from ..notification_manager import NotificationManager
+    from ..openai_chat import OpenAIChat
+    from ..telegram_client import TelegramClient
 
     # Create instances in dependency order
 
@@ -115,7 +121,7 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
     from ..infrastructure.delivery.tracker import MessageDeliveryTracker
 
     delivery_db_path = working_dir / "delivery.db"
-    delivery_storage = MessageDeliveryStorage(delivery_db_path)
+    delivery_storage = MessageDeliveryStorage(delivery_db_path, config)
     await delivery_storage.initialize()
 
     delivery_checker = TelegramMessageDeliveryChecker(telegram_client) if telegram_client else None

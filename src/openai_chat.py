@@ -8,9 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
-from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Optional, Dict, List, Union
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 import aiohttp
 import numpy as np
@@ -25,10 +24,10 @@ class Message:
     """A chat message."""
     role: str  # "system", "user", "assistant", "tool"
     content: str = ""
-    tool_call_id: Optional[str] = None
-    tool_calls: Optional[List[dict]] = None
-    reasoning: Optional[str] = None
-    reasoning_content: Optional[str] = None
+    tool_call_id: str | None = None
+    tool_calls: list[dict] | None = None
+    reasoning: str | None = None
+    reasoning_content: str | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"role": self.role}
@@ -50,18 +49,18 @@ class ChatResponse:
     """Complete chat response."""
     id: str
     model: str
-    choices: List[dict]
+    choices: list[dict]
     usage: dict
-    provider: Optional[str] = None
-    cost: Optional[float] = None
+    provider: str | None = None
+    cost: float | None = None
 
 
 @dataclass
 class StreamingChunk:
     """A single streaming chunk from the LLM."""
     delta: dict  # role, content, tool_calls, etc.
-    finish_reason: Optional[str] = None
-    usage: Optional[dict] = None
+    finish_reason: str | None = None
+    usage: dict | None = None
 
 
 class OpenAIChat:
@@ -69,7 +68,7 @@ class OpenAIChat:
 
     def __init__(
         self,
-        endpoint: Optional[EndpointAndModel] = None,
+        endpoint: EndpointAndModel | None = None,
         timeout: int = 30,
         max_retries: int = 2,
     ):
@@ -77,7 +76,7 @@ class OpenAIChat:
         self.endpoint = endpoint or config.llm
         self.timeout = timeout or config.request_timeout_secs
         self.max_retries = max_retries
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
         self._closed = False
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
@@ -96,19 +95,19 @@ class OpenAIChat:
 
     async def chat(
         self,
-        messages: List[Message],
+        messages: list[Message],
         system_prompt: str = "",
-        tools: Optional[List[dict]] = None,
-        temperature: Optional[float] = None,
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
         max_tokens: int = 8192,
-        top_p: Optional[float] = None,
-        top_k: Optional[float] = None,
-        min_p: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        repetition_penalty: Optional[float] = None,
-        seed: Optional[int] = None,
+        top_p: float | None = None,
+        top_k: float | None = None,
+        min_p: float | None = None,
+        presence_penalty: float | None = None,
+        repetition_penalty: float | None = None,
+        seed: int | None = None,
         stream: bool = False,
-    ) -> Union[ChatResponse, AsyncIterator[StreamingChunk]]:
+    ) -> ChatResponse | AsyncIterator[StreamingChunk]:
         """Send a chat completion request."""
         config = get_config()
         if temperature is None:
@@ -163,7 +162,7 @@ class OpenAIChat:
                     parsed = self._parse_response(data)
                     self._record_usage_metrics(parsed)
                     return parsed
-            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
+            except (TimeoutError, aiohttp.ClientError, RuntimeError) as e:
                 if attempt == self.max_retries:
                     raise
                 logger.warning(f"LLM request failed (attempt {attempt+1}): {e}, retrying...")
@@ -222,7 +221,7 @@ class OpenAIChat:
                 completion_tokens=completion_tokens,
                 cached_tokens=cached_tokens,
             )
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.warning(f"Failed to record usage metrics: {e}")
 
     def _parse_response(self, data: dict) -> ChatResponse:
@@ -235,7 +234,7 @@ class OpenAIChat:
             cost=data.get("cost"),
         )
 
-    async def embedding(self, text: str, model: Optional[str] = None) -> np.ndarray:
+    async def embedding(self, text: str, model: str | None = None) -> np.ndarray:
         """Generate embedding vector for text."""
         config = get_config()
         emb_config = config.embedding
@@ -257,14 +256,14 @@ class OpenAIChat:
                     data = await resp.json()
                     embedding = data["data"][0]["embedding"]
                     return np.array(embedding, dtype=np.float64)
-            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
+            except (TimeoutError, aiohttp.ClientError, RuntimeError) as e:
                 if attempt == self.max_retries:
                     raise
                 logger.warning(f"Embedding request failed (attempt {attempt+1}): {e}, retrying...")
                 await asyncio.sleep(0.5 * (2 ** attempt))
         raise RuntimeError("Max retries exceeded")
 
-    async def synthesize_speech(self, text: str, voice: Optional[str] = None) -> Optional[bytes]:
+    async def synthesize_speech(self, text: str, voice: str | None = None) -> bytes | None:
         """Synthesize speech (TTS) from text, using the configured backend.
 
         Supports ElevenLabs and OpenAI-compatible `/audio/speech` endpoints,
@@ -318,7 +317,7 @@ class OpenAIChat:
             else:
                 logger.error(f"Unknown TTS backend: {backend}")
                 return None
-        except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
+        except (TimeoutError, aiohttp.ClientError, RuntimeError) as e:
             logger.error(f"TTS request failed: {e}")
             return None
 
@@ -372,7 +371,7 @@ class OpenAIChat:
                     if parsed.choices:
                         return parsed.choices[0].get("message", {}).get("content", "") or ""
                     return ""
-            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
+            except (TimeoutError, aiohttp.ClientError, RuntimeError) as e:
                 if attempt == self.max_retries:
                     raise
                 logger.warning(f"Vision request failed (attempt {attempt+1}): {e}, retrying...")
@@ -405,7 +404,7 @@ class OpenAIChat:
                         raise RuntimeError(f"Transcription API error {resp.status}: {text_err}")
                     result = await resp.json()
                     return result.get("text", "")
-            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
+            except (TimeoutError, aiohttp.ClientError, RuntimeError) as e:
                 if attempt == self.max_retries:
                     raise
                 logger.warning(f"Transcription request failed (attempt {attempt+1}): {e}, retrying...")

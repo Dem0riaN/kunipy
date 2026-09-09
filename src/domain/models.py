@@ -6,8 +6,8 @@ They represent core business concepts.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, Any, List
 from enum import Enum
+from typing import Any, Optional
 
 
 @dataclass
@@ -24,12 +24,12 @@ class TelegramMessage:
 
     # Optional fields
     media: Optional["MediaInfo"] = None
-    reply_to: Optional[int] = None
-    edit_date: Optional[datetime] = None
+    reply_to: int | None = None
+    edit_date: datetime | None = None
     is_outgoing: bool = False
 
     # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -40,22 +40,22 @@ class MediaInfo:
     """
     type: str  # "photo", "sticker", "video", "document", "voice", "animation"
     file_id: int
-    mime_type: Optional[str] = None
-    size: Optional[int] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    duration: Optional[int] = None  # For video/voice
+    mime_type: str | None = None
+    size: int | None = None
+    width: int | None = None
+    height: int | None = None
+    duration: int | None = None  # For video/voice
 
     # Sticker-specific
-    emoji: Optional[str] = None
+    emoji: str | None = None
     is_animated: bool = False
     is_video: bool = False
 
     # Document-specific
-    filename: Optional[str] = None
+    filename: str | None = None
 
     # Additional metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -65,13 +65,13 @@ class User:
     display_name: str
 
     # Multi-channel identity (ТЗ-002 punkt 5)
-    telegram_id: Optional[int] = None
+    telegram_id: int | None = None
     desktop_owner: bool = False  # Is this the desktop owner?
 
     # Metadata
-    first_seen: Optional[datetime] = None
-    last_interaction: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    first_seen: datetime | None = None
+    last_interaction: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,14 +79,14 @@ class Chat:
     """Domain representation of chat context."""
     chat_id: str
     chat_type: str  # "private", "group", "supergroup", "channel"
-    title: Optional[str] = None
+    title: str | None = None
 
     # Participants
-    participant_ids: List[str] = field(default_factory=list)
+    participant_ids: list[str] = field(default_factory=list)
 
     # Metadata
-    created_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class Channel(Enum):
@@ -108,4 +108,4 @@ class Conversation:
     message_count: int = 0
 
     # Context
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)

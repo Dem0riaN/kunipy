@@ -7,7 +7,6 @@ Extracted from app.py god object (ТЗ-001 punkt 5).
 import asyncio
 import logging
 from pathlib import Path
-from typing import List, Optional
 
 from ..di import Dependencies
 
@@ -36,7 +35,7 @@ class ApplicationLifecycle:
         self._deps = deps
         self._working_dir = working_dir
         self._running = False
-        self._tasks: List[asyncio.Task] = []
+        self._tasks: list[asyncio.Task] = []
 
     async def start(self) -> None:
         """Start the application.
@@ -133,7 +132,7 @@ class ApplicationLifecycle:
                 await asyncio.gather(*self._tasks, return_exceptions=True)
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt")
-        except Exception as e:
-            logger.exception(f"Unhandled error: {e}")
+        except Exception:
+            logger.exception("Unhandled error")
         finally:
             await self.stop()

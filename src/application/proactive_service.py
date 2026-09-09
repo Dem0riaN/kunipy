@@ -8,7 +8,6 @@ import asyncio
 import logging
 import random
 from datetime import datetime, timedelta
-from typing import List, Optional
 
 from ..di import Dependencies
 
@@ -44,7 +43,7 @@ class ProactiveMessageService:
         self._check_interval_min = check_interval_min
         self._check_interval_max = check_interval_max
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
         """Start proactive messaging loop."""
@@ -117,7 +116,7 @@ class ProactiveMessageService:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
                 logger.error(f"Error in proactive loop: {e}")
                 await asyncio.sleep(60)  # Backoff on error
 
@@ -132,7 +131,7 @@ class ProactiveMessageService:
         # Random chance: 15% per check (~1-2 times per day)
         return random.random() <= 0.15
 
-    async def _get_proactive_chats(self) -> List:
+    async def _get_proactive_chats(self) -> list:
         """Get candidate chats for proactive messages.
 
         Prioritizes:
@@ -186,8 +185,8 @@ class ProactiveMessageService:
         if not chat.last_message:
             return False
 
-        last_date = datetime.fromtimestamp(chat.last_message.date)
-        now = datetime.now()
+        last_date = datetime.fromtimestamp(chat.last_message.date, tz=self._config.timezone_info)
+        now = datetime.now(self._config.timezone_info)
         time_since = now - last_date
 
         # If last message was from us
@@ -238,11 +237,11 @@ class ProactiveMessageService:
         # Calculate message age (prefer chats we haven't talked to in a while)
         age = 0
         if chat.last_message:
-            age = int((datetime.now() - datetime.fromtimestamp(chat.last_message.date)).total_seconds())
+            age = int((datetime.now(self._config.timezone_info) - datetime.fromtimestamp(chat.last_message.date, tz=self._config.timezone_info)).total_seconds())
 
         return (priority, age)
 
-    async def _generate_proactive_message(self, chat) -> Optional[str]:
+    async def _generate_proactive_message(self, chat) -> str | None:
         """Generate proactive message using LLM and diary context.
 
         Args:
@@ -301,6 +300,6 @@ Message:"""
 
             return content.strip()
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(f"Failed to generate proactive message: {e}")
             return None

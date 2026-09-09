@@ -7,8 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.character import build_system_prompt, ensure_character_files  # noqa: E402
-from src.config import Config  # noqa: E402
+from src.character import build_system_prompt, ensure_character_files
+from src.config import Config
 
 
 def test_ensure_character_files_creates_defaults(tmp_path):

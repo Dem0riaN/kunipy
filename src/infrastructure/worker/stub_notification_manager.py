@@ -3,8 +3,8 @@
 Temporary stub until Phase 2 full implementation based on C++ NotificationManager.
 """
 
-from typing import Optional, Dict, Any
 from asyncio import Future
+from typing import Any
 
 from ...interfaces.worker import Notification, NotificationHandle
 
@@ -23,9 +23,9 @@ class StubNotificationManager:
         self,
         message: str,
         priority: int = 0,
-        pin: Optional[str] = None,
-        actions: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        pin: str | None = None,
+        actions: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None
     ) -> NotificationHandle:
         """Pass notification to worker queue.
 

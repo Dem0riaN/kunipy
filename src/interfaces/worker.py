@@ -3,9 +3,9 @@
 Based on C++ NotificationManager architecture (kuni-cpp/src/NotificationManager.h).
 """
 
-from typing import Protocol, Optional, Dict, Any, Callable, Awaitable
-from dataclasses import dataclass
 from asyncio import Future
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 
 @dataclass
@@ -16,9 +16,9 @@ class Notification:
     """
     message: str  # Natural language notification for LLM
     priority: int = 0  # Higher priority processed first
-    pin: Optional[str] = None  # Worker affinity (e.g., "<chat id=123 />")
-    actions: Optional[Dict[str, Any]] = None  # Available tools for this notification
-    metadata: Dict[str, Any] = None  # Additional context
+    pin: str | None = None  # Worker affinity (e.g., "<chat id=123 />")
+    actions: dict[str, Any] | None = None  # Available tools for this notification
+    metadata: dict[str, Any] = None  # Additional context
 
     def __post_init__(self):
         if self.metadata is None:
@@ -47,9 +47,9 @@ class INotificationManager(Protocol):
         self,
         message: str,
         priority: int = 0,
-        pin: Optional[str] = None,
-        actions: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        pin: str | None = None,
+        actions: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None
     ) -> NotificationHandle:
         """Pass notification to worker queue.
 
@@ -116,7 +116,7 @@ class IWorkerOrchestrator(Protocol):
         """Stop all workers gracefully."""
         ...
 
-    async def get_worker_stats(self) -> Dict[str, Any]:
+    async def get_worker_stats(self) -> dict[str, Any]:
         """Get worker statistics.
 
         Returns:

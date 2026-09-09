@@ -1,12 +1,11 @@
 """Message delivery storage implementation (ТЗ-001 punkt 12-18)."""
 
-import sqlite3
 import hashlib
-from typing import Optional, List
-from datetime import datetime
+import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
-from dataclasses import asdict
 
+from src.config import Config
 from src.domain.delivery.models import MessageDeliveryRecord
 from src.interfaces.delivery import DeliveryState
 
@@ -18,14 +17,16 @@ class MessageDeliveryStorage:
     Implements ТЗ-001 punkt 12 storage requirements.
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, config: Config):
         """Initialize storage.
 
         Args:
             db_path: Path to SQLite database file
+            config: Application config (for timezone, though storage uses UTC internally)
         """
         self._db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        self._config = config
+        self._conn: sqlite3.Connection | None = None
 
     async def initialize(self) -> None:
         """Initialize database schema."""
@@ -85,7 +86,8 @@ class MessageDeliveryStorage:
         if not self._conn:
             raise RuntimeError("Storage not initialized")
 
-        now = datetime.now().isoformat()
+        # Use UTC for technical storage timestamps
+        now = datetime.now(UTC).isoformat()
 
         self._conn.execute("""
             INSERT INTO delivery_records (
@@ -120,7 +122,7 @@ class MessageDeliveryStorage:
         self,
         chat_id: int,
         message_id: int
-    ) -> Optional[MessageDeliveryRecord]:
+    ) -> MessageDeliveryRecord | None:
         """Retrieve delivery record.
 
         Args:
@@ -147,7 +149,7 @@ class MessageDeliveryStorage:
 
         return self._row_to_record(row)
 
-    async def get_pending_verifications(self) -> List[MessageDeliveryRecord]:
+    async def get_pending_verifications(self) -> list[MessageDeliveryRecord]:
         """Get all messages pending verification.
 
         Returns:
@@ -172,7 +174,7 @@ class MessageDeliveryStorage:
         chat_id: int,
         text_hash: str,
         window_seconds: float
-    ) -> List[MessageDeliveryRecord]:
+    ) -> list[MessageDeliveryRecord]:
         """Find recent messages with same hash.
 
         Args:
@@ -186,8 +188,9 @@ class MessageDeliveryStorage:
         if not self._conn:
             raise RuntimeError("Storage not initialized")
 
-        cutoff = datetime.now().timestamp() - window_seconds
-        cutoff_iso = datetime.fromtimestamp(cutoff).isoformat()
+        # Use UTC for technical timestamp calculations
+        cutoff = datetime.now(UTC).timestamp() - window_seconds
+        cutoff_iso = datetime.fromtimestamp(cutoff, tz=UTC).isoformat()
 
         cursor = self._conn.execute("""
             SELECT message_id, chat_id, state, sent_at,
@@ -234,8 +237,9 @@ class MessageDeliveryStorage:
         if not self._conn:
             raise RuntimeError("Storage not initialized")
 
-        cutoff = datetime.now().timestamp() - (days * 86400)
-        cutoff_iso = datetime.fromtimestamp(cutoff).isoformat()
+        # Use UTC for technical timestamp calculations
+        cutoff = datetime.now(UTC).timestamp() - (days * 86400)
+        cutoff_iso = datetime.fromtimestamp(cutoff, tz=UTC).isoformat()
 
         cursor = self._conn.execute("""
             DELETE FROM delivery_records

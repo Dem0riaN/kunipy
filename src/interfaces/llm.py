@@ -1,17 +1,18 @@
 """LLM interface protocols."""
 
-from typing import Protocol, List, Dict, Any, Optional, AsyncIterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 
 @dataclass
 class Message:
     """LLM message (user, assistant, system, tool)."""
     role: str
-    content: str | List[Dict[str, Any]] = ""
-    name: Optional[str] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
-    tool_call_id: Optional[str] = None
+    content: str | list[dict[str, Any]] = ""
+    name: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
 
 
 @dataclass
@@ -20,8 +21,8 @@ class Response:
     content: str
     model: str
     finish_reason: str
-    usage: Optional[Dict[str, int]] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    usage: dict[str, int] | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class IOpenAIChat(Protocol):
@@ -32,11 +33,11 @@ class IOpenAIChat(Protocol):
 
     async def chat(
         self,
-        messages: List[Message],
-        model: Optional[str] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
+        messages: list[Message],
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         stream: bool = False,
         **kwargs
     ) -> Response:
@@ -58,7 +59,7 @@ class IOpenAIChat(Protocol):
 
     async def chat_stream(
         self,
-        messages: List[Message],
+        messages: list[Message],
         **kwargs
     ) -> AsyncIterator[str]:
         """Stream chat response.
@@ -71,8 +72,8 @@ class IOpenAIChat(Protocol):
     async def embedding(
         self,
         text: str,
-        model: Optional[str] = None
-    ) -> List[float]:
+        model: str | None = None
+    ) -> list[float]:
         """Generate embedding vector.
 
         Args:
@@ -91,7 +92,7 @@ class IEmbeddingProvider(Protocol):
     Separate from IOpenAIChat for flexibility (could use different providers).
     """
 
-    async def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         """Generate embedding vector for single text.
 
         Args:
@@ -102,7 +103,7 @@ class IEmbeddingProvider(Protocol):
         """
         ...
 
-    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts (more efficient).
 
         Args:

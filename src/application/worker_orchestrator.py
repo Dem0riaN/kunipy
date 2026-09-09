@@ -7,9 +7,7 @@ notifications from a shared queue.
 
 import asyncio
 import logging
-from typing import List
 
-from ..notification_manager import Notification
 from ..interfaces.worker import INotificationManager
 
 logger = logging.getLogger(__name__)
@@ -27,7 +25,7 @@ class WorkerOrchestrator:
     def __init__(
         self,
         notification_manager: INotificationManager,
-        workers: List,  # List[Worker] - avoid circular import
+        workers: list,  # List[Worker] - avoid circular import
     ) -> None:
         """Initialize orchestrator.
 
@@ -37,7 +35,7 @@ class WorkerOrchestrator:
         """
         self._notification_manager = notification_manager
         self._workers = workers
-        self._tasks: List[asyncio.Task] = []
+        self._tasks: list[asyncio.Task] = []
         self._running = False
 
     async def start(self) -> None:
@@ -90,6 +88,6 @@ class WorkerOrchestrator:
             worker.wake_up()
 
     @property
-    def workers(self) -> List:
+    def workers(self) -> list:
         """Access to worker list for external coordination."""
         return self._workers
