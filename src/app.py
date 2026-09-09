@@ -1,726 +1,235 @@
-"""Main application for kunipy.
+"""Refactored application composition root.
 
-Orchestrates Telegram client, diary, workers, and proxy server.
-Supports both Telegram mode (with real client) and standalone proxy mode.
+This replaces the 728-line app.py god object with a clean composition root
+following ТЗ-001 punkt 5 (clean architecture).
+
+Responsibilities:
+- Wire up dependencies via DI container
+- Delegate to focused service classes
+- Minimal orchestration logic (<100 lines)
 """
-
-from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
-from .config import LockdownMode, get_config, load_config
-from .diary import Diary
-from .notification_manager import Notification, NotificationManager, get_notification_manager
-from .openai_chat import OpenAIChat
-from .telegram_client import TelegramClient, get_telegram_client, TelegramChat, TelegramMessage
-from .tools import ToolContext
-from .worker import Worker
+from .config import Config, load_config
+from .di.container import create_dependencies
+from .application.lifecycle import ApplicationLifecycle
+from .application.telegram_handler import TelegramEventHandler
+from .application.proactive_service import ProactiveMessageService
+from .application.sleep_scheduler import SleepScheduler
+from .application.worker_orchestrator import WorkerOrchestrator
 
 logger = logging.getLogger(__name__)
 
 
 class App:
-    """Main application class."""
+    """Kunipy application composition root.
 
-    def __init__(self, working_dir: str = "data"):
-        self.working_dir = Path(working_dir)
-        self.working_dir.mkdir(parents=True, exist_ok=True)
+    Wires together all components via dependency injection and delegates
+    to focused service classes. Follows clean architecture pattern from
+    C++ kuni port specification (ТЗ-001).
+    """
 
-        self.config = get_config()
-        self.telegram: Optional[TelegramClient] = None
-        self.openai: Optional[OpenAIChat] = None
-        self.diary: Optional[Diary] = None
-        self.notification_manager: Optional[NotificationManager] = None
-        self.workers: List[Worker] = []
-        self._running = False
-        self._tasks: List[asyncio.Task] = []
-        self._current_chat_id: Optional[int] = None
-        self._proactive_task: Optional[asyncio.Task] = None
-        self._sleep_task: Optional[asyncio.Task] = None
+    def __init__(self, config: Config, working_dir: str = "data"):
+        """Initialize application.
+
+        Args:
+            config: Application configuration
+            working_dir: Directory for persistent data
+        """
+        self._config = config
+        self._working_dir = Path(working_dir)
+        self._working_dir.mkdir(parents=True, exist_ok=True)
+
+        # DI container (created during initialize)
+        self._deps: Optional = None
+
+        # Service orchestrators
+        self._lifecycle: Optional[ApplicationLifecycle] = None
+        self._telegram_handler: Optional[TelegramEventHandler] = None
+        self._worker_orchestrator: Optional[WorkerOrchestrator] = None
+        self._proactive_service: Optional[ProactiveMessageService] = None
+        self._sleep_scheduler: Optional[SleepScheduler] = None
 
     async def initialize(self) -> None:
-        """Initialize all components."""
-        logger.info("Initializing kunipy...")
+        """Initialize all components via dependency injection."""
+        logger.info("Initializing application components...")
 
-        # OpenAI client
-        self.openai = OpenAIChat()
+        # Create DI container with all dependencies
+        self._deps = await create_dependencies(self._working_dir, self._config)
 
-        # Diary
-        diary_dir = self.working_dir / "diary"
-        self.diary = Diary(diary_dir=diary_dir, openai=self.openai)
+        # Initialize service orchestrators
+        self._lifecycle = ApplicationLifecycle(self._deps, self._working_dir)
+        self._telegram_handler = TelegramEventHandler(self._deps)
+        self._sleep_scheduler = SleepScheduler(
+            diary=self._deps.diary,
+            night_hour=4  # 4 AM consolidation
+        )
+        self._proactive_service = ProactiveMessageService(self._deps)
 
-        # Notification manager
-        self.notification_manager = get_notification_manager()
-
-        # Telegram client
-        if self.config.telegram_enabled:
-            self.telegram = get_telegram_client()
-            await self.telegram.start()
-            self.telegram.add_event_handler(self._handle_telegram_event)
-            logger.info(f"Telegram client ready, my_id={self.telegram.my_id}")
-        else:
-            logger.info("Telegram disabled, running in standalone mode")
-
-        # Register notification handler (routes to workers)
-        self.notification_manager.register_handler(self._handle_notification)
-
-        # Create workers
-        worker_count = max(1, self.config.worker_count)
-        for i in range(worker_count):
-            worker = Worker(
-                name=f"worker_{i}",
-                app_base=self,
-                telegram=self.telegram,
-                openai=self.openai,
-                diary=self.diary,
-                notification_manager=self.notification_manager,
+        # Create worker orchestrator
+        from .worker import Worker
+        workers = [
+            Worker(
+                name=f"worker-{i}",
+                openai=self._deps.openai_chat,
+                notification_manager=self._deps.notification_manager,
+                telegram=self._deps.telegram_client,
+                diary=self._deps.diary,
+                config=self._deps.config,
             )
-            self.workers.append(worker)
+            for i in range(self._deps.config.worker_count)
+        ]
+        self._worker_orchestrator = WorkerOrchestrator(
+            notification_manager=self._deps.notification_manager,
+            workers=workers
+        )
 
-        logger.info(f"Initialized with {worker_count} workers")
+        logger.info("All components initialized")
 
     async def start(self) -> None:
-        """Start the application."""
-        self._running = True
+        """Start the application and all background services."""
+        if not self._deps:
+            raise RuntimeError("App not initialized - call initialize() first")
 
-        # Restore short-term "things to remember" across restarts.
-        from .working_memory import get_working_memory
-        get_working_memory().load_from_file()
-
-        # Start notification manager (this runs the queue loop)
-        self.notification_manager.start(len(self.workers))
+        # Start lifecycle
+        await self._lifecycle.start()
 
         # Start workers
-        for worker in self.workers:
-            task = asyncio.create_task(worker.run(), name=f"worker-{worker.name}")
-            self._tasks.append(task)
+        await self._worker_orchestrator.start()
 
-        # If Telegram is enabled, send startup notifications and start proactive messaging
-        if self.config.telegram_enabled and self.telegram:
-            await self._send_startup_notifications()
-            self._proactive_task = asyncio.create_task(self._proactive_loop())
+        # Set up Telegram event handler if enabled
+        if self._deps.config.telegram_enabled and self._deps.telegram_client:
+            # Register event callback
+            self._deps.telegram_client.set_event_handler(
+                self._telegram_handler.handle_event
+            )
+            # Send startup notifications
+            await self._telegram_handler.send_startup_notifications()
+
+        # Start proactive messaging if Telegram enabled
+        if self._deps.config.telegram_enabled and self._deps.telegram_client:
+            self._lifecycle.add_background_task(
+                self._proactive_service.run(),
+                name="proactive-messaging"
+            )
+
+        # Start sleep consolidation if diary enabled
+        if self._deps.diary:
+            self._lifecycle.add_background_task(
+                self._sleep_scheduler.run(),
+                name="sleep-consolidation"
+            )
 
         # Start proxy server if enabled
-        if self.config.proxy_enabled:
+        if self._deps.config.proxy_enabled:
             await self._start_proxy_server()
 
-        # Start Prometheus metrics endpoint (llm_usage_* counters)
-        if self.config.metrics_enabled:
-            from .metrics import start_metrics_server
-            metrics_task = asyncio.create_task(
-                start_metrics_server(self.config.metrics_port), name="metrics-server"
-            )
-            self._tasks.append(metrics_task)
-
-        # Nightly diary sleep consolidation ("Kuni requires sleep, as a human does")
-        if self.diary:
-            self._sleep_task = asyncio.create_task(self._sleep_consolidation_loop())
-            self._tasks.append(self._sleep_task)
+        # Start metrics server if enabled
+        if self._deps.config.metrics_enabled:
+            await self._start_metrics_server()
 
         logger.info("Kunipy is running")
 
-        # Wait for tasks (block until interrupted)
-        try:
-            # Wait for all worker tasks, but don't exit on one failure
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-        except Exception as e:
-            logger.exception(f"Unhandled error: {e}")
-        finally:
-            await self.stop()
+        # Wait for shutdown signal
+        await self._lifecycle.wait_for_shutdown()
 
     async def stop(self) -> None:
-        """Shut down the application."""
-        if not self._running:
-            return
-        self._running = False
-        logger.info("Stopping...")
+        """Stop the application gracefully."""
+        logger.info("Stopping application...")
 
-        # Persist short-term "things to remember" across restarts.
-        from .working_memory import get_working_memory
-        get_working_memory().save_to_file()
+        # Dump remaining worker context to diary
+        if self._deps.diary and self._worker_orchestrator:
+            await self._dump_worker_context()
 
-        # Cancel proactive loop
-        if self._proactive_task and not self._proactive_task.done():
-            self._proactive_task.cancel()
-            try:
-                await self._proactive_task
-            except asyncio.CancelledError:
-                pass
+        # Stop workers
+        if self._worker_orchestrator:
+            await self._worker_orchestrator.stop()
 
-        # Cancel sleep consolidation loop
-        if self._sleep_task and not self._sleep_task.done():
-            self._sleep_task.cancel()
-            try:
-                await self._sleep_task
-            except asyncio.CancelledError:
-                pass
+        # Stop lifecycle
+        if self._lifecycle:
+            await self._lifecycle.stop()
 
-        # Stop notification manager
-        if self.notification_manager:
-            self.notification_manager.stop()
-
-        # Stop Telegram client
-        if self.telegram:
-            await self.telegram.stop()
-
-        # Cancel worker tasks
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
-
-        # Dump remaining context to diary (per-chat, since Worker.temporary_context
-        # is now keyed by chat_id -- see worker.py).
-        for worker in self.workers:
-            for chat_id, messages in worker.temporary_context.items():
-                await self.diary_dump_messages(messages)
-            worker.temporary_context = {}
-
-        logger.info("Stopped")
-
-    # ---------- Telegram event handling ----------
-
-    async def _handle_telegram_event(self, event: Dict[str, Any]) -> None:
-        """Handle incoming Telegram events."""
-        event_type = event.get("type")
-        if event_type == "updateNewMessage":
-            msg = event.get("message")
-            if msg:
-                await self._handle_new_message(msg)
-        elif event_type == "updateChat":
-            # Chat updated (e.g., title change, pinned status)
-            chat = event.get("chat")
-            if chat:
-                # Update cache or trigger something
-                pass
-        elif event_type == "updateUser":
-            # User updated
-            pass
-
-    async def _handle_new_message(self, msg: TelegramMessage) -> None:
-        """Handle a new incoming message from Telegram."""
-        # Ignore own messages (sent by us)
-        if msg.is_outgoing:
-            return
-
-        # Check lockdown mode
-        if not await self._is_accessible(msg.chat_id):
-            return
-
-        # A separate, usually stricter filter for which accessible chats
-        # actually generate a notification (e.g., stay joined to a group
-        # but only get pinged for papik's own messages there).
-        if not await self._check_lockdown(msg.chat_id, self.config.chat_notification_filter):
-            return
-
-        # Occasionally skip responding at all, to seem less robotically
-        # attentive -- except for papik, who should always get through.
-        if msg.sender_id != self.config.papik_chat_id and random.random() < self.config.suggest_ignore_chance:
-            logger.debug(f"Randomly ignoring message in chat {msg.chat_id} (suggest_ignore_chance)")
-            return
-
-        # Transcribe voice messages, if a speech-to-text endpoint is configured.
-        if msg.media and msg.media.get("type") == "voice" and not msg.content:
-            msg.content = await self._transcribe_voice_message(msg)
-
-        # Describe incoming photos, if vision is enabled/configured.
-        if msg.media and msg.media.get("type") == "photo":
-            description = await self._describe_photo_message(msg)
-            if description:
-                msg.content = f"{msg.content}\n[photo] {description}".strip()
-
-        # Build notification string
-        notification_text = await self._format_message_notification(msg)
-        if not notification_text:
-            return
-
-        # Build actions (open chat handler)
-        actions = [
-            {
-                "name": "open",
-                "description": f"Open chat {msg.chat_id}",
-                "handler": lambda ctx, chat_id=msg.chat_id: self._open_chat(chat_id),
-            }
-        ]
-
-        # Determine priority
-        priority = 0
-        if msg.sender_id == self.config.papik_chat_id:
-            priority = 1000  # Highest priority for owner
-        elif self.config.wake_up_on_pinned_chat:
-            # Check if chat is pinned
-            chat = await self.telegram.get_chat(msg.chat_id)
-            if chat and chat.is_pinned:
-                priority = 100
-
-        # Create notification
-        notification = Notification(
-            priority=priority,
-            message=notification_text,
-            pin=f"chat_{msg.chat_id}",
-            actions=actions,
-        )
-
-        self.notification_manager.add_notification(notification)
-
-        # Wake up workers if high priority
-        if priority > 0:
-            for worker in self.workers:
-                worker.wake_up()
-
-    async def _format_message_notification(self, msg: TelegramMessage) -> str:
-        """Format a TelegramMessage as a notification string."""
-        chat = await self.telegram.get_chat(msg.chat_id)
-        if not chat:
-            chat_title = f"Chat {msg.chat_id}"
-        else:
-            chat_title = chat.title
-
-        # Get sender info
-        sender_name = "Unknown"
-        if msg.sender_id:
-            user = await self.telegram.get_user(msg.sender_id)
-            if user:
-                sender_name = f"{user.first_name} {user.last_name}".strip() or user.username or f"user_{msg.sender_id}"
-
-        # Determine message type
-        is_dm = chat and chat.type == "private"
-
-        if is_dm:
-            return (
-                f'<notification chat_id="{msg.chat_id}">\n'
-                f"You received a direct message from {sender_name} (chat_id={msg.chat_id})\n"
-                f"{msg.content}\n"
-                f"</notification>\n"
-                f"You don't have any chat open. Use #open tool to open the chat"
-            )
-        else:
-            return (
-                f'<notification chat_id="{msg.chat_id}">\n'
-                f"{sender_name} sent a message in group chat \"{chat_title}\" (chat_id={msg.chat_id})\n"
-                f"{msg.content}\n"
-                f"</notification>\n"
-                f"You don't have any chat open. Use #open tool to open the chat"
-            )
-
-    async def _transcribe_voice_message(self, msg: TelegramMessage) -> str:
-        """Download and transcribe a voice message, if a speech-to-text
-        endpoint is configured. Returns an empty string on failure/disabled."""
-        if not self.telegram or not self.openai or not msg.media:
-            return ""
-        if not self.config.capability_hearing or not self.config.llm_audio_to_text.endpoint.base_url:
-            logger.debug("Voice message hearing disabled or unconfigured, skipping transcription")
-            return ""
-        file_id = msg.media.get("file_id")
-        if not file_id:
-            return ""
-        try:
-            audio_bytes = await self.telegram.download_file_bytes(file_id)
-            if not audio_bytes:
-                return ""
-            text = await self.openai.transcribe_audio(audio_bytes, format="ogg")
-            return f"[voice message] {text}" if text else ""
-        except Exception as e:
-            logger.error(f"Failed to transcribe voice message: {e}")
-            return ""
-
-    async def _describe_photo_message(self, msg: TelegramMessage) -> str:
-        """Download and describe an incoming photo via a vision-capable
-        model, if `capabilities.vision` is enabled and configured. Returns
-        an empty string on failure/disabled."""
-        if not self.telegram or not self.openai or not msg.media:
-            return ""
-        if not self.config.capability_vision or not self.config.llm_image_to_text.endpoint.base_url:
-            logger.debug("Vision disabled or unconfigured, skipping photo description")
-            return ""
-        file_id = msg.media.get("file_id")
-        if not file_id:
-            return ""
-        try:
-            image_bytes = await self.telegram.download_file_bytes(file_id)
-            if not image_bytes:
-                return ""
-            return await self.openai.describe_image(image_bytes, mime_type="image/jpeg")
-        except Exception as e:
-            logger.error(f"Failed to describe photo message: {e}")
-            return ""
-
-    async def _is_accessible(self, chat_id: int) -> bool:
-        """Check if chat is accessible under the main lockdown mode."""
-        return await self._check_lockdown(chat_id, get_config().lockdown)
-
-    async def _check_lockdown(self, chat_id: int, mode: LockdownMode) -> bool:
-        """Evaluate a LockdownMode against a chat_id. Shared by `_is_accessible`
-        (can we interact at all) and `chat_notification_filter` (should we
-        even generate a notification for this message)."""
-        if mode.value == "none":
-            return True
-        if mode.value == "papik_only":
-            return chat_id == self.config.papik_chat_id
-        if mode.value == "contacts_only":
-            if not self.telegram:
-                return True
-            chat = await self.telegram.get_chat(chat_id)
-            if not chat or chat.type != "private":
-                # Contact filtering only makes sense for 1:1 chats; groups
-                # and channels the account already joined stay accessible.
-                return True
-            contact_ids = await self.telegram.get_contact_ids()
-            return chat_id in contact_ids
-        return True
-
-    async def _open_chat(self, chat_id: int) -> str:
-        """Open a chat and load history."""
-        if not self.telegram:
-            return "Telegram not available"
-
-        await self.telegram.open_chat(chat_id)
-        self._current_chat_id = chat_id
-
-        chat = await self.telegram.get_chat(chat_id)
-        if not chat:
-            return f"Chat {chat_id} not found"
-
-        # Load recent messages
-        messages = await self.telegram.get_chat_history(chat_id, limit=30)
-
-        # Mark messages as viewed
-        if messages:
-            msg_ids = [m.id for m in messages]
-            await self.telegram.view_messages(chat_id, msg_ids)
-
-        # Build response with chat history
-        result = f"You switched to the chat \"{chat.title}\". You see last messages:\n"
-        for msg in reversed(messages):  # oldest first for reading order
-            sender = await self.telegram.get_user(msg.sender_id)
-            sender_name = sender.first_name if sender else f"user_{msg.sender_id}"
-            result += f"[{sender_name}]: {msg.content[:200]}\n"
-
-        return result
-
-    async def _send_startup_notifications(self) -> None:
-        """Send notifications for unread chats on startup."""
-        if not self.config.check_chats_on_startup:
-            return
-        if not self.telegram:
-            return
-
-        chats = await self.telegram.get_chats(limit=50)
-        # Process oldest first (reverse order)
-        for chat in reversed(chats):
-            if chat.unread_count == 0:
-                continue
-            # Get last message
-            if chat.last_message:
-                await self._handle_new_message(chat.last_message)
-            else:
-                # Try to fetch last message
-                hist = await self.telegram.get_chat_history(chat.id, limit=1)
-                if hist:
-                    await self._handle_new_message(hist[0])
-
-    # ---------- Proactive messaging ----------
-
-    async def _sleep_consolidation_loop(self) -> None:
-        """Background loop that runs diary sleep consolidation once a day,
-        preferring a quiet nighttime hour (mirrors the original kuni's
-        "Kuni requires sleep, as a human does" behavior)."""
-        if not self.diary:
-            return
-
-        NIGHT_HOUR = 4  # run around 4 AM local time
-
-        logger.info("Sleep consolidation loop started")
-        while self._running:
-            try:
-                now = datetime.now()
-                next_run = now.replace(hour=NIGHT_HOUR, minute=0, second=0, microsecond=0)
-                if next_run <= now:
-                    next_run += timedelta(days=1)
-                await asyncio.sleep((next_run - now).total_seconds())
-
-                if not self._running:
-                    break
-
-                logger.info("Starting nightly diary sleep consolidation")
-                await self.diary.sleep_consolidation()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.exception(f"Sleep consolidation loop error: {e}")
-                await asyncio.sleep(3600)  # back off an hour on unexpected errors
-
-    async def _proactive_loop(self) -> None:
-        """Background loop for proactive messages (writing first).
-
-        This implements the "act proactively" feature from the original kuni:
-        - Periodically check pinned chats and important contacts
-        - If enough time has passed since last interaction, send a message
-        - Use diary to recall context and generate appropriate content
-        """
-        if not self.telegram:
-            return
-
-        logger.info("Proactive loop started")
-
-        # Interval: check every 30-60 minutes
-        check_interval_min = 30
-        check_interval_max = 60
-
-        while self._running:
-            try:
-                # Wait for a random interval
-                interval = random.randint(check_interval_min * 60, check_interval_max * 60)
-                await asyncio.sleep(interval)
-
-                if not self._running:
-                    break
-
-                # Check if we should act proactively
-                if not self._should_act_proactively():
-                    continue
-
-                # Get chats to consider
-                chats = await self._get_proactive_chats()
-                if not chats:
-                    continue
-
-                # Pick a random chat from the list
-                chat = random.choice(chats)
-                if not chat:
-                    continue
-
-                # Generate proactive message
-                message = await self._generate_proactive_message(chat)
-                if message:
-                    await self.telegram.send_message(chat.id, message)
-                    logger.info(f"Proactive message sent to {chat.title} ({chat.id})")
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in proactive loop: {e}")
-                await asyncio.sleep(60)  # backoff on error
-
-        logger.info("Proactive loop stopped")
-
-    def _should_act_proactively(self) -> bool:
-        """Determine if it's time to act proactively."""
-        # Random chance: 15% per check (so about 1-2 times per day)
-        if random.random() > 0.15:
-            return False
-        return True
-
-    async def _get_proactive_chats(self) -> List[TelegramChat]:
-        """Get chats that are candidates for proactive messages.
-
-        Prioritizes:
-        1. Pinned chats (high priority)
-        2. Chats with recent activity (last 24h)
-        3. Chats with papik (owner)
-        4. Random chats from main list
-        """
-        if not self.telegram:
-            return []
-
-        all_chats = await self.telegram.get_chats(limit=100)
-        candidates = []
-
-        for chat in all_chats:
-            # Skip channels (can't send messages)
-            if chat.type == "channel":
-                continue
-            # Skip chats we're not a member of
-            if not chat.is_member:
-                continue
-            # Skip empty chats
-            if not chat.last_message:
-                continue
-
-            # Check if last message is from us (we already talked recently)
-            if chat.last_message and chat.last_message.is_outgoing:
-                # If last message is from us and less than 2 hours ago, skip
-                last_date = datetime.fromtimestamp(chat.last_message.date)
-                if datetime.now() - last_date < timedelta(hours=2):
-                    continue
-            else:
-                # If last message from someone else less than 30 min ago, skip (we might still be in conversation)
-                if chat.last_message and not chat.last_message.is_outgoing:
-                    last_date = datetime.fromtimestamp(chat.last_message.date)
-                    if datetime.now() - last_date < timedelta(minutes=30):
-                        continue
-
-            candidates.append(chat)
-
-            # Respect `can_write_to_a_new_person`: unless explicitly allowed,
-            # don't proactively message someone we've never personally sent
-            # a message to before (a fresh contact/chat we only received
-            # messages from or just joined).
-            if not self.config.can_write_to_a_new_person and chat.type == "private":
-                history = await self.telegram.get_chat_history(chat.id, limit=20)
-                if not any(m.is_outgoing for m in history):
-                    candidates.pop()
-                    continue
-
-        # Prioritize: pinned chats first, then owner's chat, then others
-        def priority(c: TelegramChat) -> tuple[int, int]:
-            p = 0
-            if c.is_pinned:
-                p += 100
-            if c.id == self.config.papik_chat_id:
-                p += 50
-            # Prefer chats with older last message (we haven't talked in a while)
-            age = 0
-            if c.last_message:
-                age = int((datetime.now() - datetime.fromtimestamp(c.last_message.date)).total_seconds())
-            return (p, age)
-
-        candidates.sort(key=priority, reverse=True)
-        return candidates[:10]  # top 10
-
-    async def _generate_proactive_message(self, chat: TelegramChat) -> Optional[str]:
-        """Generate a proactive message using LLM and diary context."""
-        if not self.openai or not self.diary:
-            return None
-
-        # Get recent diary entries for context
-        # Use a generic query about the chat or recent events
-        query = f"What have I been thinking about regarding {chat.title}? What are my feelings about this chat?"
-        embedding = await self.openai.embedding(query)
-        diary_entries = await self.diary.query(embedding, max_entries=3)
-
-        # Build context
-        context = ""
-        if diary_entries:
-            context = "Recent memories:\n"
-            for entry, score in diary_entries:
-                context += f"- {entry.body[:300]}\n"
-
-        # Build prompt
-        prompt = f"""You are {self.config.character_name}. You want to send a proactive message to {chat.title}.
-
-Chat info: type={chat.type}, title={chat.title}
-
-{context}
-
-Generate a short, natural, friendly message to start a conversation. Be warm and authentic.
-If you have nothing to say, respond with just "NONE".
-
-Message:"""
-
-        # Call LLM
-        from .openai_chat import Message
-        messages = [Message(role="user", content=prompt)]
-        system_prompt = f"You are {self.config.character_name}, a friendly AI character."
-
-        try:
-            response = await self.openai.chat(
-                messages=messages,
-                system_prompt=system_prompt,
-                temperature=0.8,
-                max_tokens=200,
-            )
-            if not response.choices:
-                return None
-            content = response.choices[0].get("message", {}).get("content", "")
-            if "NONE" in content.strip():
-                return None
-            return content.strip()
-        except Exception as e:
-            logger.error(f"Failed to generate proactive message: {e}")
-            return None
-
-    # ---------- Notification routing ----------
-
-    async def _handle_notification(self, notification: Notification) -> None:
-        """Route notification to a worker."""
-        # Workers are already running and pulling from the queue.
-        # This handler is called after a notification is popped from the queue.
-        # But we've already implemented the worker loop to handle notifications.
-        # So this is just a logging hook.
-        logger.debug(f"Notification {notification._id} dispatched")
-
-    # ---------- Proxy server ----------
+        logger.info("Application stopped")
 
     async def _start_proxy_server(self) -> None:
-        """Start the OpenAI-compatible proxy server as a background task."""
+        """Start OpenAI-compatible proxy server."""
         import uvicorn
         from .proxy_server import create_proxy_app
 
-        fastapi_app = create_proxy_app(self.diary)
-        uvicorn_config = uvicorn.Config(
-            fastapi_app,
+        app = create_proxy_app(self._deps.diary)
+        config = uvicorn.Config(
+            app,
             host="0.0.0.0",
-            port=self.config.proxy_port,
+            port=self._deps.config.proxy_port,
             log_level="warning",
         )
-        server = uvicorn.Server(uvicorn_config)
-        task = asyncio.create_task(server.serve(), name="proxy-server")
-        self._tasks.append(task)
-        logger.info(f"Proxy server listening on http://0.0.0.0:{self.config.proxy_port}/v1")
+        server = uvicorn.Server(config)
+        self._lifecycle.add_background_task(
+            server.serve(),
+            name="proxy-server"
+        )
+        logger.info(f"Proxy server started on port {self._deps.config.proxy_port}")
 
-    # ---------- Diary dump ----------
+    async def _start_metrics_server(self) -> None:
+        """Start Prometheus metrics endpoint."""
+        from .metrics import start_metrics_server
 
-    async def diary_dump_messages(self, context: List) -> None:
-        """Dump conversation context to diary."""
-        if not context:
+        self._lifecycle.add_background_task(
+            start_metrics_server(self._deps.config.metrics_port),
+            name="metrics-server"
+        )
+        logger.info(f"Metrics server started on port {self._deps.config.metrics_port}")
+
+    async def _dump_worker_context(self) -> None:
+        """Dump remaining worker context to diary before shutdown."""
+        if not self._worker_orchestrator:
             return
-        if not self.diary:
-            return
 
-        # Build summary
-        summary = f"Conversation summary at {datetime.now().isoformat()}\n"
-        for msg in context:
-            if hasattr(msg, "role") and hasattr(msg, "content"):
-                summary += f"{msg.role}: {msg.content[:200]}\n"
+        from datetime import datetime
 
-        await self.diary.add_entry(summary, confidence=0.3)
-        logger.debug(f"Dumped {len(context)} messages to diary")
+        for worker in self._worker_orchestrator.workers:
+            for chat_id, messages in worker.temporary_context.items():
+                if not messages:
+                    continue
 
-    # ---------- Utility ----------
+                # Build summary
+                summary = f"Conversation dump at {datetime.now().isoformat()}\n"
+                for msg in messages:
+                    if hasattr(msg, "role") and hasattr(msg, "content"):
+                        summary += f"{msg.role}: {msg.content[:200]}\n"
 
-    def wake_up_workers(self) -> None:
-        """Wake up all sleeping workers."""
-        for worker in self.workers:
-            worker.wake_up()
-
-    async def get_current_chat(self) -> Optional[TelegramChat]:
-        """Get the currently open chat."""
-        if not self.telegram or not self._current_chat_id:
-            return None
-        return await self.telegram.get_chat(self._current_chat_id)
+                await self._deps.diary.add_entry(summary, confidence=0.3)
+                logger.debug(f"Dumped {len(messages)} messages from chat {chat_id}")
 
 
 async def main() -> None:
-    """Entry point."""
+    """Application entry point."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # Load config
+    # Load config (no singleton - clean DI)
     try:
         config = load_config("config.toml")
     except FileNotFoundError:
-        logger.error("config.toml not found. Please create one.")
+        logger.error("config.toml not found")
         sys.exit(1)
 
-    # Create and run app
-    app = App(working_dir="data")
+    # Create and run app with explicit config
+    app = App(config=config, working_dir="data")
     try:
         await app.initialize()
         await app.start()
     except KeyboardInterrupt:
         logger.info("Interrupted")
     except Exception as e:
-        logger.exception(f"Error: {e}")
+        logger.exception(f"Fatal error: {e}")
         sys.exit(1)
 
 

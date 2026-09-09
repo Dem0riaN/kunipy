@@ -1,101 +1,115 @@
 # kunipy
 
-Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI with Telegram interface, RAG memory, and OpenAI-compatible proxy.
+Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI with Telegram interface, built with clean architecture and dependency injection.
+
+**Архитектурный рефакторинг завершён (ТЗ-001):** Проект полностью переписан с использованием модульной объектно-ориентированной архитектуры (Application/Domain/Interfaces/Infrastructure), dependency injection, и Protocol-based интерфейсов. Legacy singleton-паттерны удалены.
 
 ## Status
 
 ### Implemented
 
+- ✅ **Clean Architecture** — Application/Domain/Interfaces/Infrastructure layers
+- ✅ **Dependency Injection** — Explicit constructor injection, composition root pattern
+- ✅ **Protocol-based interfaces** — All major components implement typed protocols
+- ✅ **Message delivery tracking** — SQLite-backed storage with 10-second verification
 - ✅ Real Telegram integration via `aiotdlib`
-- ✅ LLM tool-calling loop
-- ✅ Telegram messaging, editing, forwarding, reactions, and group administration
+- ✅ LLM tool-calling loop (OpenAI-compatible)
+- ✅ Telegram messaging, editing, forwarding, reactions, group administration
 - ✅ Photo understanding (vision)
 - ✅ Voice-message transcription (hearing)
 - ✅ Text-to-speech / voice-message generation
-- ✅ AI image generation via Stable Diffusion
-- ✅ Web search via Ollama
+- ✅ AI image generation
+- ✅ Web search
 - ✅ OpenAI-compatible proxy server
 - ✅ Prometheus LLM usage metrics
-- ✅ Working memory with persistence and TTL
 - ✅ Character persona and system-prompt management
 - ✅ Notification queue and worker system
-- ✅ C++ `kuni` migration tool
-- ✅ Diary storage, embeddings, semantic search, and sleep consolidation
+- ✅ Diary storage with embeddings and semantic search
 
-### Partially implemented / needs work
+### In Progress / Planned
 
-- 🟡 **Diary memory ingestion** — diary entries can be written internally, but there is currently no LLM tool for explicitly saving important memories. Most conversation data reaches the diary only when the conversation context is dumped after reaching the configured token limit.
-- 🟡 **Diary RAG** — semantic search works, but memory quality depends heavily on the embedding endpoint and the current diary ingestion mechanism.
-- 🟡 **Sleep consolidation** — implemented, but its usefulness is limited when the diary contains few automatically collected memories.
-- 🟡 **Vision** — photo understanding is implemented; video-message frame extraction is not.
-- 🟡 **Optional capabilities** — vision, hearing, TTS, web search, image generation, and proxy are disabled by default and require external backends and configuration.
-- 🟡 **Proxy streaming** — streaming requests are handled internally, but responses are not emitted token-by-token.
+- 🟡 **Memory system (ТЗ-002)** — Interfaces готовы, stub implementations работают; полная реализация (ChromaDB, 6-level retrieval, consolidation) запланирована
+- 🟡 **Vision enhancements** — Photo understanding работает; video frame extraction не реализован
+- 🟡 **Diary RAG quality** — Зависит от embedding endpoint и ingestion strategy
+- 🟡 **Optional capabilities** — Vision, hearing, TTS, web search, image generation требуют внешних backends
 
-### Not implemented
+### Not Implemented
 
-- ❌ Video-message vision / frame extraction
-- ❌ Dedicated LLM diary-write / memory-save tool
-- ❌ Full parity with the original C++ `kuni` memory workflow
-- ❌ Separate editable prompt files for all C++ prompts (`system.md`, `anti_repeat.md`, etc.)
-
-
+- ❌ Video-message frame extraction
+- ❌ Dedicated LLM diary-write tool
+- ❌ Full C++ kuni memory workflow parity
 
 ## Requirements
 
 - Python 3.11+
-- Dependencies listed in `pyproject.toml` (installed via `pip install -e .`)
-- A Telegram API ID/hash from [my.telegram.org](https://my.telegram.org)
-- An OpenAI-compatible LLM endpoint (e.g. local Ollama, or a cloud provider)
+- Dependencies: `pip install -e .` (see `pyproject.toml`)
+- Telegram API ID/hash from [my.telegram.org](https://my.telegram.org)
+- OpenAI-compatible LLM endpoint (local Ollama, cloud provider, etc.)
 
 ## Installation
 
 ```bash
-cd kunipy
+cd kunipy-main
 
-# Create a virtual environment (required on most modern distros -- see PEP 668)
+# Create virtual environment
 python3 -m venv .venv
-source .venv/bin/activate   # .venv\Scripts\activate on native Windows
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install kunipy and all its dependencies
+# Install dependencies
 pip install -e .
 ```
 
 ## Configuration
 
-`config.toml` in the project root holds all settings and supports
-hot-reload (edit it while the app is running; changes are picked up
-without a restart). A default file with bilingual (RU/EN) comments is
-included in this repo — copy or edit it directly rather than starting
-from scratch.
+**First run generates `config.toml`:**
 
-Minimal configuration:
-`config.toml` is **never shipped** in this repo/archive — only `config.example.toml` is, purely for reference. This is intentional: `config.toml` holds your Telegram API credentials and other secrets, and shipping a same-named file alongside it would silently overwrite yours every time you re-download an update.
+```bash
+python run.py
+# Creates config.toml from defaults, then exits
+```
 
-Run `python run.py` once with no `config.toml` present -- it will generate a default one next to itself and exit, asking you to fill it in. At minimum, set:
+Edit `config.toml` with your credentials. Minimal example:
 
 ```toml
-[general]
-character_name = "Kuni"
-character_nickname = "@kunii_chan"
-papik_name = "YourName"
-papik_chat_id = 123456789  # your Telegram user ID
-telegram_api_id = 0        # get from my.telegram.org
-telegram_api_hash = ""
-telegram_enabled = true
-lockdown = "papik_only"
+[llm]
+model = "deepseek-r1:14b"
+[llm.endpoint]
+base_url = "http://localhost:11434/v1/"
+bearer_key = ""
 
-[general.llm]
-model = "deepseek-v4-flash"
-[general.llm.endpoint]
+[character]
+name = "Куни"
+
+[telegram]
+enabled = true
+api_id = 12345678
+api_hash = "your_hash_from_my_telegram_org"
+phone = "+79991234567"
+database_directory = "data/tdlib"
+
+[diary]
+enabled = true
+directory = "data/diary"
+min_relatedness = 0.5
+
+[lockdown]
+mode = "papik_only"  # "none" | "contacts_only" | "papik_only"
+papik_chat_id = 123456789  # Your Telegram user ID
+
+[capabilities.hearing]
+enabled = false
+model = "whisper-1"
+[capabilities.hearing.endpoint]
 base_url = "http://localhost:11434/v1/"
 
-[general.embedding]
-model = "qwen3-embedding"
-[general.embedding.endpoint]
+[capabilities.vision]
+enabled = false
+model = "llava:13b"
+[capabilities.vision.endpoint]
 base_url = "http://localhost:11434/v1/"
 ```
 
-If you're migrating from an existing C++ `kuni` install instead of starting fresh, see **Migrating from C++ kuni** below.
+See `config.example.toml` for full reference with bilingual (RU/EN) comments.
 
 ## Running
 
@@ -103,38 +117,180 @@ If you're migrating from an existing C++ `kuni` install instead of starting fres
 python run.py
 ```
 
-Run it from the directory containing `config.toml` (paths for `data/`, `character_base.md`, `prompts/` are all relative to the current working directory). On first run with `telegram_enabled = true` and no existing session in `data/tdlib/`, aiotdlib will prompt you in the terminal for your phone number, the SMS/Telegram login code, and (if enabled) your 2FA password.
+Run from the directory containing `config.toml`. On first run with `telegram_enabled = true`, aiotdlib will prompt for:
+- Phone number
+- SMS/Telegram login code
+- 2FA password (if enabled)
 
-`character_base.md` and `character_appearance.md` are created next to `config.toml` on first run -- edit them freely, they're never overwritten afterward.
-
-## Migrating from C++ kuni
-
-If you already have a working C++ `kuni` install (diary entries, working memory, a logged-in TDLib session), use the migration tool instead of starting over:
-
-```bash
-python tools/migrate_from_cpp_kuni.py \
---source /path/to/kuni/build/bin \
---dest . \
---dry-run     # inspect first, then re-run without --dry-run
-```
-
-`--source` must point at the C++ binary's *actual runtime working directory* (typically `build/bin/` inside the kuni checkout), not the repository root. See the script's module docstring for exactly what gets converted and why (config key renames, diary metadata key renames, TDLib session reuse, etc.).
-
-Because your kunipy `config.toml` will already exist by then, the migrated config is written to `config.toml.migrated` instead of overwriting yours -- diff and merge the two by hand (your kunipy config has extra sections like `[capabilities.proxy]` that don't exist in the C++ version).
+Character files (`prompts/character_base.md`, `prompts/character_appearance.md`, etc.) are loaded from `prompts/` directory.
 
 ## Architecture
 
-- **config.py** — TOML configuration with hot-reload
-- **openai_chat.py** — Async client for OpenAI-compatible APIs (chat, embeddings, vision, TTS, transcription)
-- **diary.py** — Memory system with embeddings, RAG search, and sleep consolidation
-- **telegram_client.py** — Telegram client (aiotdlib/TDLib wrapper)
-- **character.py** — Character persona file management + system prompt building
-- **tools.py** — LLM function-calling tools (Telegram actions, diary, media, web search, admin)
-- **notification_manager.py** — Priority queue for events
-- **worker.py** — Worker that processes notifications through the LLM tool-calling loop
-- **proxy_server.py** — OpenAI-compatible proxy server (FastAPI)
-- **metrics.py** — Prometheus metrics (`llm_usage_*`)
-- **app.py** — Main application orchestration
+Проект следует **Clean Architecture** с чётким разделением слоёв:
+
+### Core Layers
+
+```
+┌─────────────────────────────────────────────┐
+│  Application Layer (src/application/)       │
+│  - lifecycle.py                             │
+│  - telegram_handler.py                      │
+│  - worker_orchestrator.py                   │
+│  - proactive_service.py                     │
+│  - sleep_scheduler.py                       │
+│  - media_service.py                         │
+└─────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────┐
+│  Domain Layer (src/domain/)                 │
+│  - models.py                                │
+│  - delivery/models.py                       │
+│  - memory/models.py                         │
+└─────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────┐
+│  Interfaces Layer (src/interfaces/)         │
+│  - llm.py (IOpenAIChat)                     │
+│  - telegram.py (ITelegramClient)            │
+│  - memory.py (IMemoryStore, IWorkingMemory) │
+│  - delivery.py (IMessageDeliveryTracker)    │
+│  - worker.py (INotificationManager)         │
+│  - media.py (IMediaService)                 │
+└─────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────┐
+│  Infrastructure Layer (src/infrastructure/) │
+│  - delivery/                                │
+│    - storage.py (SQLite WAL mode)           │
+│    - tracker.py                             │
+│    - telegram_checker.py                    │
+│  - memory/                                  │
+│    - stub_store.py (Phase 1 stub)           │
+│  - worker/                                  │
+│    - stub_notification_manager.py           │
+└─────────────────────────────────────────────┘
+```
+
+### Key Components
+
+- **[src/app.py](src/app.py)** — Application entry point and composition root
+- **[src/config.py](src/config.py)** — Configuration management (TOML parsing, no singleton)
+- **[src/worker.py](src/worker.py)** — Worker processing notifications through LLM tool-calling loop
+- **[src/diary.py](src/diary.py)** — Diary/memory system with embeddings and semantic search
+- **[src/di/container.py](src/di/container.py)** — Dependency injection container (composition root)
+- **[src/telegram_client.py](src/telegram_client.py)** — aiotdlib/TDLib wrapper
+- **[src/openai_chat.py](src/openai_chat.py)** — OpenAI-compatible API client
+- **[src/tools.py](src/tools.py)** — LLM function-calling tools (Telegram actions, diary, etc.)
+- **[src/character.py](src/character.py)** — Character persona and system prompt builder
+- **[src/notification_manager.py](src/notification_manager.py)** — Priority queue for events
+- **[src/proxy_server.py](src/proxy_server.py)** — OpenAI-compatible proxy (FastAPI)
+- **[src/metrics.py](src/metrics.py)** — Prometheus metrics
+
+### Design Principles
+
+✅ **Dependency Injection** — Explicit constructor injection, no global singletons  
+✅ **Protocol-based interfaces** — `typing.Protocol` for all major abstractions  
+✅ **Single Responsibility** — Each class has one clear purpose  
+✅ **Composition Root** — Dependencies wired in `di/container.py`  
+✅ **Testability** — 50+ tests (integration + unit) in `tests/`  
+✅ **Layer isolation** — Application → Domain → Interfaces → Infrastructure  
+
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test suites
+pytest tests/integration/
+pytest tests/unit/
+pytest tests/architecture/
+
+# Run with coverage
+pytest --cov=src --cov-report=html
+```
+
+**Test coverage:**
+- Integration tests: DI container, App lifecycle
+- Unit tests: Worker orchestrator, Media service
+- Architecture tests: Interface compliance, layer boundaries, no god objects
+
+## Project Structure
+
+```
+kunipy-main/
+├── run.py                          # Entry point
+├── config.example.toml             # Configuration reference
+├── pyproject.toml                  # Dependencies
+├── README.md
+├── .gitignore
+├── src/
+│   ├── app.py                      # Main application (DI-based)
+│   ├── config.py                   # Configuration management
+│   ├── worker.py                   # Notification worker (DI-based)
+│   ├── diary.py                    # Memory/diary system (DI-based)
+│   ├── character.py                # Persona management
+│   ├── openai_chat.py              # LLM client
+│   ├── telegram_client.py          # Telegram client
+│   ├── tools.py                    # LLM function tools
+│   ├── notification_manager.py     # Event queue
+│   ├── proxy_server.py             # OpenAI proxy
+│   ├── metrics.py                  # Prometheus metrics
+│   ├── image_generator.py          # Image generation
+│   ├── application/                # Application services
+│   │   ├── lifecycle.py
+│   │   ├── telegram_handler.py
+│   │   ├── worker_orchestrator.py
+│   │   ├── proactive_service.py
+│   │   ├── sleep_scheduler.py
+│   │   └── media_service.py
+│   ├── domain/                     # Domain models
+│   │   ├── models.py
+│   │   ├── delivery/
+│   │   └── memory/
+│   ├── interfaces/                 # Protocol definitions
+│   │   ├── llm.py
+│   │   ├── telegram.py
+│   │   ├── memory.py
+│   │   ├── delivery.py
+│   │   ├── worker.py
+│   │   └── media.py
+│   ├── infrastructure/             # Infrastructure implementations
+│   │   ├── delivery/               # Message delivery tracking
+│   │   ├── memory/                 # Memory stores
+│   │   └── worker/                 # Worker infrastructure
+│   ├── di/                         # Dependency injection
+│   │   └── container.py
+│   └── tests/                      # Internal tests
+│       ├── architecture/
+│       └── infrastructure/
+├── tests/                          # Test suites
+│   ├── integration/
+│   │   ├── test_di_container.py
+│   │   └── test_app.py
+│   └── unit/
+│       ├── test_worker_orchestrator.py
+│       └── test_media_service.py
+├── prompts/                        # Character prompts
+│   ├── character_base.md
+│   ├── character_appearance.md
+│   ├── system.md
+│   └── ...
+├── data/                           # Runtime data (gitignored)
+│   ├── tdlib/                      # Telegram session
+│   ├── diary/                      # Diary entries
+│   └── delivery.db                 # Delivery tracking
+├── config/                         # Additional configs (gitignored)
+└── docs/
+    └── ARCHITECTURE.md             # Detailed architecture docs
+```
+
+## Development Roadmap
+
+- ✅ **ТЗ-001: Clean Architecture** — Завершено
+- 🚧 **ТЗ-002: Memory System 2.0** — В планах (ChromaDB, 6-level retrieval, consolidation)
+- 🚧 **ТЗ-003: Vision 2.0** — В планах (multi-monitor, desktop vision)
+- 🚧 **ТЗ-004: Avatar/Renderer** — В планах (animation, interaction, desktop UI)
 
 ## License
 
