@@ -2,7 +2,7 @@
 
 Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI with Telegram interface, built with clean architecture and dependency injection.
 
-**Архитектурный рефакторинг завершён (ТЗ-001):** Проект полностью переписан с использованием модульной объектно-ориентированной архитектуры (Application/Domain/Interfaces/Infrastructure), dependency injection, и Protocol-based интерфейсов. Legacy singleton-паттерны удалены.
+**This information is applicable to the DEV branch.**
 
 ## Status
 
