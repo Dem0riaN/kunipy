@@ -13,11 +13,12 @@ from typing import Any
 from .character import build_system_prompt
 from .config import Config
 from .diary import Diary
+from .infrastructure.tui_streaming import TuiStreamingPrinter
 from .interfaces.worker import INotificationManager
 from .notification_manager import Notification
 from .openai_chat import Message, OpenAIChat
 from .telegram_client import TelegramClient
-from .tools import create_default_tools
+import src.tools as tools_module
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class Worker:
 
     async def _process_notification(self, notification: Notification) -> None:
         """Process a single notification end-to-end."""
-        logger.debug(f"Worker {self.name} processing notification")
+        logger.info(f"Processing notification: {notification.message[:100]}...")
 
         # Extract chat_id from pin
         chat_id = None
@@ -154,7 +155,7 @@ class Worker:
                 m.content for m in history
                 if m.role == "assistant" and (m.content or "").strip()
             ]
-            tools = create_default_tools(
+            tools = tools_module.create_default_tools(
                 telegram=self.telegram,
                 diary=self.diary,
                 openai=self.openai,
@@ -168,6 +169,9 @@ class Worker:
         messages = list(history)
         ever_called_tool = False
 
+        # Initialize TUI printer for this notification
+        tui_printer = TuiStreamingPrinter()
+
         # Tool-calling loop
         for iteration in range(MAX_TOOL_ITERATIONS):
             response = await self.openai.chat(
@@ -180,6 +184,9 @@ class Worker:
 
             if not response.choices:
                 break
+
+            # Update TUI with response
+            tui_printer.update(response)
 
             choice = response.choices[0]
             _ = choice.get("finish_reason")  # Used by upstream, not here
@@ -237,6 +244,9 @@ class Worker:
 
             # No tool calls - model finished
             break
+
+        # Finish TUI output
+        tui_printer.finish()
 
         # Trim history if too long
         if len(history) > 20:

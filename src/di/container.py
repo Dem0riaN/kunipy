@@ -86,8 +86,10 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
     # Import here to avoid circular dependencies
     from ..diary import Diary
 
+    # Memory infrastructure (ТЗ-001 memory system)
+    from ..infrastructure.memory import EmbeddingCache, MemoryStore, WorkingMemory
+
     # Stub implementations for worker management (replaced in Phase 2)
-    from ..infrastructure.memory.stub_store import InMemoryStore, InMemoryWorkingMemory
     from ..notification_manager import NotificationManager
     from ..openai_chat import OpenAIChat
     from ..telegram_client import TelegramClient
@@ -96,13 +98,19 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
 
     # LLM layer
     openai_chat = OpenAIChat(
-        api_key=config.llm.endpoint.bearer_key,
-        base_url=config.llm.endpoint.base_url,
-        default_model=config.llm.model,
+        endpoint=config.llm,
+        timeout=30,
+        max_retries=2,
     )
 
-    # Embedding provider (reuses OpenAI chat for now)
-    embedding_provider = openai_chat  # OpenAIChat implements IEmbeddingProvider
+    # Embedding provider (separate endpoint for embeddings)
+    # If embedding config is empty, fallback to main LLM
+    embedding_endpoint = config.embedding if config.embedding.model else config.llm
+    embedding_provider = OpenAIChat(
+        endpoint=embedding_endpoint,
+        timeout=30,
+        max_retries=2,
+    )
 
     # Telegram layer (only if enabled)
     telegram_client = None
@@ -110,10 +118,10 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
         telegram_client = TelegramClient(
             api_id=config.telegram_api_id,
             api_hash=config.telegram_api_hash,
-            phone=config.telegram_phone,
-            database_directory=config.telegram_database_directory,
+            database_dir=config.telegram_database_directory,
         )
-        await telegram_client.start()
+        # Увеличенные таймауты для нестабильного подключения
+        await telegram_client.start(connect_timeout=120.0, max_retries=10)
 
     # Delivery tracking (ТЗ-001 punkt 12-18)
     from ..infrastructure.delivery.storage import MessageDeliveryStorage
@@ -130,9 +138,15 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
     # High-level Telegram service (will be created in Phase 1 refactoring)
     telegram_message_service = telegram_client  # type: ignore
 
-    # Memory layer (stubs for Phase 1, full implementation in ТЗ-002)
-    memory_store = InMemoryStore()
-    working_memory = InMemoryWorkingMemory()
+    # Memory layer (ChromaDB-based implementation, ТЗ-001 complete)
+    chroma_persist_dir = working_dir / "chroma"
+    chroma_persist_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize embedding cache (TTL-based, reduces API calls)
+    _ = EmbeddingCache(ttl_seconds=3600)  # TODO: wire with embedding_provider
+
+    memory_store = MemoryStore(persist_directory=str(chroma_persist_dir))
+    working_memory = WorkingMemory()
 
     # Worker notification manager
     notification_manager = NotificationManager()

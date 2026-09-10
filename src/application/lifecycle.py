@@ -56,8 +56,7 @@ class ApplicationLifecycle:
         logger.info("Starting kunipy application...")
 
         # Restore working memory from previous session
-        from ..working_memory import get_working_memory
-        get_working_memory().load_from_file()
+        # Note: Persistence not yet implemented (ТЗ-002 punkt 7.6)
 
         # Start notification manager
         worker_count = max(1, self._deps.config.worker_count)
@@ -82,8 +81,8 @@ class ApplicationLifecycle:
         logger.info("Stopping application...")
 
         # Persist working memory
-        from ..working_memory import get_working_memory
-        get_working_memory().save_to_file()
+        if self._deps.working_memory:
+            self._deps.working_memory.save_to_file()
 
         # Cancel all background tasks
         for task in self._tasks:
@@ -108,28 +107,28 @@ class ApplicationLifecycle:
         """Check if application is running."""
         return self._running
 
-    def add_background_task(self, coro, name: str) -> asyncio.Task:
+    def add_background_task(self, task: asyncio.Task, name: str) -> None:
         """Add a background task to be managed by lifecycle.
 
         Args:
-            coro: Coroutine to run
+            task: Task to manage (already created)
             name: Task name for logging
-
-        Returns:
-            Created task
         """
-        task = asyncio.create_task(coro, name=name)
         self._tasks.append(task)
-        return task
+        logger.debug(f"Registered background task: {name}")
 
     async def wait_for_shutdown(self) -> None:
         """Block until application is shut down.
 
         Waits for all background tasks to complete or KeyboardInterrupt.
         """
+        logger.info(f"Waiting for shutdown, {len(self._tasks)} background tasks registered")
         try:
             if self._tasks:
                 await asyncio.gather(*self._tasks, return_exceptions=True)
+            else:
+                # No background tasks - wait indefinitely for Ctrl+C
+                await asyncio.Event().wait()
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt")
         except Exception:

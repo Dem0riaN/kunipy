@@ -1,7 +1,7 @@
 # kunipy Architecture Guide
 
-**Version**: Phase 1  
-**Last Updated**: 2026-09-09
+**Version**: Phase 2 Complete  
+**Last Updated**: 2026-09-10
 
 ---
 
@@ -115,10 +115,16 @@ src/
 │   ├── telegram_client.py  # TelegramClient (TDLib wrapper)
 │   ├── telegram_message_service.py
 │   ├── openai_chat.py      # OpenAIChat (LLM client)
-│   ├── memory/
-│   │   └── stub_store.py   # InMemoryStore (Phase 2: real DB)
-│   ├── delivery/
-│   │   └── stub_tracker.py # StubDeliveryTracker (Phase 2: real)
+│   ├── memory/             # ✅ Memory infrastructure (ТЗ-001 complete)
+│   │   ├── vector_store.py    # ChromaDB wrapper
+│   │   ├── storage.py         # MemoryStore (IMemoryStore impl)
+│   │   ├── working_memory.py  # WorkingMemory (IWorkingMemory impl)
+│   │   ├── embedding_cache.py # TTL-based embedding cache
+│   │   └── stub_store.py      # Legacy stubs
+│   ├── delivery/           # ✅ Delivery tracking (ТЗ-001 complete)
+│   │   ├── storage.py         # MessageDeliveryStorage (SQLite WAL)
+│   │   ├── tracker.py         # MessageDeliveryTracker
+│   │   └── telegram_checker.py # TelegramMessageDeliveryChecker
 │   └── worker/
 │       └── stub_notification_manager.py
 │
@@ -312,7 +318,7 @@ Memory retrieval respects scope boundaries.
 
 ---
 
-## Multi-Level Memory Architecture (ТЗ-002)
+## Multi-Level Memory Architecture (ТЗ-001/ТЗ-002)
 
 ### Memory Levels
 
@@ -339,11 +345,161 @@ Long-Term Memory (scope-specific)
 RAG Retrieval (on next query)
 ```
 
-### Implementation Status
+### Implementation Status (✅ COMPLETE)
 
-- **Phase 1**: Interfaces + domain models ✅
-- **Phase 2**: Full implementation with vector DB
-- **Phase 3**: Multi-channel context switching
+**Phase 1**: Interfaces + domain models ✅  
+**Phase 2**: Full implementation ✅ **COMPLETE 2026-09-10**
+
+### Memory Infrastructure Components
+
+#### 1. VectorStore (`src/infrastructure/memory/vector_store.py`)
+
+ChromaDB wrapper для semantic search:
+
+```python
+class VectorStore:
+    """ChromaDB vector database wrapper."""
+    
+    async def add_memory(
+        self,
+        memory_id: str,
+        content: str,
+        embedding: list[float],
+        metadata: dict[str, Any],
+    ) -> None:
+        """Add memory with embedding to vector store."""
+        
+    async def search(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict]:
+        """Semantic search by embedding similarity."""
+```
+
+**Features:**
+- Persistent ChromaDB storage
+- Metadata filtering (user_id, chat_id, scope, kind)
+- Cosine similarity search
+- Automatic collection management
+
+#### 2. MemoryStore (`src/infrastructure/memory/storage.py`)
+
+IMemoryStore protocol implementation:
+
+```python
+class MemoryStore:
+    """Memory storage with vector search capabilities."""
+    
+    async def create_memory(self, memory: MemoryPiece) -> str:
+        """Store new memory with automatic embedding."""
+        
+    async def search_memory(
+        self,
+        query: str,
+        user_id: str | None = None,
+        chat_id: str | None = None,
+        scope: MemoryScope | None = None,
+        limit: int = 10,
+    ) -> list[MemoryPiece]:
+        """Semantic search across memories."""
+```
+
+**Features:**
+- Automatic embedding generation
+- Scope-based filtering (DIALOGUE, PERSONAL, GLOBAL)
+- User/chat isolation
+- Confidence and importance scoring
+
+#### 3. WorkingMemory (`src/infrastructure/memory/working_memory.py`)
+
+IWorkingMemory protocol implementation:
+
+```python
+class WorkingMemory:
+    """In-memory working context for current interactions."""
+    
+    def get_context(self, user_id: str, chat_id: str) -> WorkingContext:
+        """Get current working context."""
+        
+    def update_context(
+        self,
+        user_id: str,
+        chat_id: str,
+        message_text: str,
+    ) -> None:
+        """Update working context with new message."""
+```
+
+**Features:**
+- Per-user/chat context isolation
+- Recent messages tracking
+- Active promises and plans
+- Current mood state
+- In-memory only (fast)
+
+#### 4. EmbeddingCache (`src/infrastructure/memory/embedding_cache.py`)
+
+TTL-based cache для embedding API calls:
+
+```python
+class EmbeddingCache:
+    """LRU cache with TTL for embeddings."""
+    
+    def get(self, text: str) -> list[float] | None:
+        """Get cached embedding if available and not expired."""
+        
+    def set(self, text: str, embedding: list[float]) -> None:
+        """Cache embedding with TTL."""
+```
+
+**Features:**
+- TTL-based expiration (default 1 hour)
+- LRU eviction policy
+- Automatic cleanup
+- Statistics tracking
+
+### DI Container Integration (✅ COMPLETE)
+
+Memory components wired in `src/di/container.py`:
+
+```python
+async def create_dependencies(working_dir: Path, config: Config) -> Dependencies:
+    # Memory layer (ChromaDB-based implementation)
+    chroma_persist_dir = working_dir / "chroma"
+    chroma_persist_dir.mkdir(parents=True, exist_ok=True)
+
+    memory_store = MemoryStore(persist_directory=str(chroma_persist_dir))
+    working_memory = WorkingMemory()
+
+    return Dependencies(
+        memory_store=memory_store,
+        working_memory=working_memory,
+        # ... other dependencies
+    )
+```
+
+### Migration from C++ kuni
+
+Automatic migration tool: `migrate_diary.py`
+
+```bash
+# Migrate C++ kuni diary to ChromaDB
+python migrate_diary.py --kuni-dir /path/to/cpp-kuni/diary
+
+# Dry-run (check without writing)
+python migrate_diary.py --kuni-dir /path/to/cpp-kuni/diary --dry-run
+```
+
+**Features:**
+- Automatic parsing of C++ kuni diary format
+- Metadata extraction (confidence, importance, user_id, chat_id)
+- Embedding regeneration
+- Progress tracking
+- Error handling
+
+See [docs/MIGRATION.md](MIGRATION.md) for details.
 
 ---
 

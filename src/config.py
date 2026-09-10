@@ -49,8 +49,16 @@ class Config:
     # Core LLM
     llm: EndpointAndModel = field(default_factory=EndpointAndModel)
 
+    # Embedding model (for memory system and diary)
+    embedding: EndpointAndModel = field(default_factory=EndpointAndModel)
+
     # Character
     character_name: str = "Куни"
+    character_nickname: str = ""
+
+    # Owner (papik)
+    papik_name: str = ""
+    papik_chat_id: int = 0
 
     # Telegram
     telegram_enabled: bool = False
@@ -67,7 +75,6 @@ class Config:
 
     # Lockdown
     lockdown: LockdownMode = LockdownMode.NONE
-    papik_chat_id: int = 0
 
     # Capabilities
     capability_hearing: bool = False
@@ -108,6 +115,18 @@ class Config:
     # Worker
     worker_sleep_enabled: bool = False
     worker_sleep_timeout: int = 300
+    worker_count: int = 1
+
+    # Startup behavior
+    check_chats_on_startup: bool = True
+
+    # Notification filtering
+    chat_notification_filter: LockdownMode = LockdownMode.NONE
+    suggest_ignore_chance: float = 0.0
+
+    # Metrics
+    metrics_enabled: bool = False
+    metrics_port: int = 9090
 
     # Application timezone
     timezone: str = "UTC"
@@ -238,7 +257,8 @@ class Config:
         cfg.record_voice_openai_format = openai_tts.get("response_format", cfg.record_voice_openai_format)
         cfg.record_voice_openai_pcm_sample_rate = openai_tts.get("pcm_sample_rate", cfg.record_voice_openai_pcm_sample_rate)
 
-        proxy_cfg = capabilities.get("proxy", {})
+        # Proxy (top-level section, not in capabilities)
+        proxy_cfg = data.get("proxy", {})
         cfg.proxy_enabled = proxy_cfg.get("enabled", cfg.proxy_enabled)
         cfg.proxy_port = proxy_cfg.get("port", cfg.proxy_port)
         upstream = proxy_cfg.get("upstream", {})

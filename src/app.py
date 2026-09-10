@@ -66,7 +66,7 @@ class App:
         self._lifecycle = ApplicationLifecycle(self._deps, self._working_dir)
         self._telegram_handler = TelegramEventHandler(self._deps)
         self._sleep_scheduler = SleepScheduler(
-            diary=self._deps.diary,
+            deps=self._deps,
             night_hour=4  # 4 AM consolidation
         )
         self._proactive_service = ProactiveMessageService(self._deps)
@@ -105,7 +105,7 @@ class App:
         # Set up Telegram event handler if enabled
         if self._deps.config.telegram_enabled and self._deps.telegram_client:
             # Register event callback
-            self._deps.telegram_client.set_event_handler(
+            self._deps.telegram_client.add_event_handler(
                 self._telegram_handler.handle_event
             )
             # Send startup notifications
@@ -113,20 +113,19 @@ class App:
 
         # Start proactive messaging if Telegram enabled
         if self._deps.config.telegram_enabled and self._deps.telegram_client:
-            self._lifecycle.add_background_task(
-                self._proactive_service.run(),
-                name="proactive-messaging"
-            )
+            task = self._proactive_service.start()
+            if task:
+                self._lifecycle.add_background_task(task, "proactive-service")
 
         # Start sleep consolidation if diary enabled
         if self._deps.diary:
-            self._lifecycle.add_background_task(
-                self._sleep_scheduler.run(),
-                name="sleep-consolidation"
-            )
+            task = self._sleep_scheduler.start()
+            if task:
+                self._lifecycle.add_background_task(task, "sleep-scheduler")
 
         # Start proxy server if enabled
         if self._deps.config.proxy_enabled:
+            logger.info(f"Proxy enabled, starting server on port {self._deps.config.proxy_port}")
             await self._start_proxy_server()
 
         # Start metrics server if enabled
@@ -170,20 +169,19 @@ class App:
             log_level="warning",
         )
         server = uvicorn.Server(config)
-        self._lifecycle.add_background_task(
-            server.serve(),
-            name="proxy-server"
-        )
+        task = asyncio.create_task(server.serve(), name="proxy-server")
+        self._lifecycle.add_background_task(task, "proxy-server")
         logger.info(f"Proxy server started on port {self._deps.config.proxy_port}")
 
     async def _start_metrics_server(self) -> None:
         """Start Prometheus metrics endpoint."""
         from .metrics import start_metrics_server
 
-        self._lifecycle.add_background_task(
+        task = asyncio.create_task(
             start_metrics_server(self._deps.config.metrics_port),
             name="metrics-server"
         )
+        self._lifecycle.add_background_task(task, "metrics-server")
         logger.info(f"Metrics server started on port {self._deps.config.metrics_port}")
 
     async def _dump_worker_context(self) -> None:

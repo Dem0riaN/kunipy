@@ -36,14 +36,19 @@ class SleepScheduler:
         self._running = False
         self._task: asyncio.Task = None
 
-    async def start(self) -> None:
-        """Start sleep consolidation loop."""
+    def start(self) -> asyncio.Task | None:
+        """Start sleep consolidation loop.
+
+        Returns:
+            Created task to be registered with lifecycle, or None if not started
+        """
         if self._running:
-            return
+            return None
 
         self._running = True
         self._task = asyncio.create_task(self._sleep_loop(), name="sleep-scheduler")
         logger.info(f"Sleep scheduler started (runs at {self._night_hour}:00 AM)")
+        return self._task
 
     async def stop(self) -> None:
         """Stop sleep consolidation loop."""
@@ -75,7 +80,7 @@ class SleepScheduler:
         while self._running:
             try:
                 # Calculate next run time
-                now = datetime.now(self._config.timezone_info)
+                now = datetime.now(self._deps.config.timezone_info)
                 next_run = now.replace(
                     hour=self._night_hour,
                     minute=0,

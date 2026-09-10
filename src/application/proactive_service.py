@@ -45,18 +45,23 @@ class ProactiveMessageService:
         self._running = False
         self._task: asyncio.Task | None = None
 
-    async def start(self) -> None:
-        """Start proactive messaging loop."""
+    def start(self) -> asyncio.Task | None:
+        """Start proactive messaging loop.
+
+        Returns:
+            Created task to be registered with lifecycle, or None if not started
+        """
         if self._running:
-            return
+            return None
 
         if not self._deps.telegram_client:
             logger.info("Telegram disabled, proactive messaging unavailable")
-            return
+            return None
 
         self._running = True
         self._task = asyncio.create_task(self._proactive_loop(), name="proactive-messages")
         logger.info(f"Proactive messaging started (check interval: {self._check_interval_min}-{self._check_interval_max}m)")
+        return self._task
 
     async def stop(self) -> None:
         """Stop proactive messaging loop."""

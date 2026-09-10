@@ -24,6 +24,7 @@ class Notification:
     message: str = ""
     pin: str = ""  # grouping key (e.g., chat_id)
     actions: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __lt__(self, other: Notification) -> bool:
         # For heapq: lower priority number = higher urgency (we invert)
@@ -55,13 +56,16 @@ class NotificationManager:
         logger.info(f"Notification manager started with {worker_count} workers")
         # Workers are started externally; we just keep the queue.
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the notification manager."""
         self._running = False
         # Cancel worker tasks if any
         for task in self._tasks:
             if not task.done():
                 task.cancel()
+        # Wait for cancellation
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         logger.info("Notification manager stopped")
 
@@ -74,9 +78,36 @@ class NotificationManager:
             # PriorityQueue expects (priority, item) where priority is lower = higher
             # We invert priority so higher number = higher urgency
             self._queue.put_nowait((-notification.priority, notification))
-            logger.debug(f"Added notification {notification._id} with priority {notification.priority}")
+            logger.info(f"Added notification {notification._id} with priority {notification.priority}, queue_size={self._queue.qsize()}")
         except asyncio.QueueFull:
             logger.warning("Notification queue full, dropping notification")
+
+    async def pass_notification(
+        self,
+        message: str,
+        priority: int = 0,
+        pin: str = "",
+        metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Pass a notification to the queue.
+
+        This is the main entry point used by telegram_handler and other components.
+
+        Args:
+            message: Notification message text
+            priority: Priority level (higher = more urgent)
+            pin: Grouping key (e.g., chat_id)
+            metadata: Additional metadata
+        """
+        notification = Notification(
+            message=message,
+            priority=priority,
+            pin=pin,
+        )
+        if metadata:
+            notification.metadata = metadata
+        self.add_notification(notification)
+        logger.info(f"Passed notification to queue: pin={pin}, priority={priority}")
 
     async def get(self) -> Notification | None:
         """Get the next notification from the queue (blocking)."""

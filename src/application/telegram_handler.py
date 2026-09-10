@@ -52,10 +52,12 @@ class TelegramEventHandler:
             event: TDLib event dictionary
         """
         event_type = event.get("type")
+        logger.info(f"Received Telegram event: {event_type}")
 
         if event_type == "updateNewMessage":
             msg = event.get("message")
             if msg:
+                logger.info(f"Processing new message from chat {msg.chat_id}")
                 await self.handle_new_message(msg)
 
         elif event_type == "updateChat":

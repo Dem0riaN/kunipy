@@ -544,6 +544,7 @@ class TelegramClient:
         event = self._convert_update(update)
         if event is None:
             return
+        logger.debug(f"Processing event: {event.get('type')}")
         for cb in self._callbacks:
             try:
                 result = cb(event)

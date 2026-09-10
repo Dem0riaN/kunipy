@@ -38,8 +38,20 @@ from .character import build_system_prompt
 from .config import Config, EndpointAndModel, get_config
 from .diary import Diary
 from .openai_chat import Message, OpenAIChat
-from .tools import OpenAITools, create_ask_tool, create_web_search_tool
-from .working_memory import get_working_memory
+# Import from parent-level tools.py, not tools package
+import sys
+from importlib import import_module
+_tools_mod = import_module('.tools', 'src')
+if hasattr(_tools_mod, '__path__'):
+    # It's a package, need to get the module
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("src.tools_module", "src/tools.py")
+    _tools_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_tools_mod)
+OpenAITools = _tools_mod.OpenAITools
+Tool = _tools_mod.Tool
+create_ask_tool = _tools_mod.create_ask_tool
+create_web_search_tool = _tools_mod.create_web_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +112,8 @@ def create_proxy_app(diary: Diary | None) -> FastAPI:
         openai = OpenAIChat(endpoint=upstream_endpoint)
         tools = _build_proxy_tools(diary, openai, config)
 
-        wm = get_working_memory()
-        working_memory_text = str(wm.get("things_to_remember") or "")
-        system_prompt = build_system_prompt(config, working_memory_text=working_memory_text)
+        # Proxy doesn't use working memory - build system prompt without it
+        system_prompt = build_system_prompt(config, working_memory_text="")
 
         messages: list[Message] = []
         for m in client_messages:
