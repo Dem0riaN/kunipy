@@ -81,6 +81,7 @@ class App:
                 telegram=self._deps.telegram_client,
                 diary=self._deps.diary,
                 config=self._deps.config,
+                memory_service=self._deps.memory_service,  # ТЗ-002
             )
             for i in range(self._deps.config.worker_count)
         ]

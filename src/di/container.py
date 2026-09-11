@@ -15,6 +15,7 @@ from ..config import Config
 if TYPE_CHECKING:
     from ..application.media.registry import MediaExtractorRegistry
     from ..diary import Diary
+    from ..infrastructure.memory import MemoryService
 
 from ..interfaces import (
     IEmbeddingProvider,
@@ -64,6 +65,9 @@ class Dependencies:
 
     # Legacy components (to be refactored)
     diary: Diary | None = None  # Will be refactored to use IMemoryStore
+
+    # ТЗ-002 new memory system
+    memory_service: MemoryService | None = None  # New high-level memory API
 
 
 async def create_dependencies(working_dir: Path, config: Config) -> Dependencies:
@@ -177,6 +181,62 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
             config=config,
         )
 
+    # ТЗ-002 new memory system (if enabled)
+    memory_service = None
+    if config.memory_enabled:
+        from ..infrastructure.memory import (
+            ChatRepository,
+            ConversationRepository,
+            MemoryRepository,
+            MemoryService,
+            UserRepository,
+            WorkingMemoryRepository,
+        )
+        from ..infrastructure.memory.universal_db_adapter import UniversalDBAdapter
+
+        # Choose database backend based on configuration
+        if config.memory_backend == "postgresql":
+            from ..infrastructure.memory.postgres_database import PostgreSQLDatabase
+
+            # Initialize PostgreSQL database
+            memory_db = PostgreSQLDatabase(config.memory_postgres_url)
+            pg_conn = await memory_db.connect()
+            await memory_db.initialize_schema()
+
+            # Wrap connection with universal adapter
+            conn = UniversalDBAdapter(pg_conn)
+            logger.info("Using PostgreSQL for memory system")
+        else:
+            # Default to SQLite
+            from ..infrastructure.memory import MemoryDatabase
+
+            memory_db_path = working_dir / config.memory_db_path
+            memory_db = MemoryDatabase(memory_db_path)
+            sqlite_conn = memory_db.connect()
+            memory_db.initialize_schema()
+
+            # Wrap connection with universal adapter
+            conn = UniversalDBAdapter(sqlite_conn)
+            logger.info(f"Using SQLite for memory system: {memory_db_path}")
+
+        # Create repositories (same for both backends)
+        conversation_repo = ConversationRepository(conn)
+        memory_repo = MemoryRepository(conn)
+        working_memory_repo = WorkingMemoryRepository(conn)
+        user_repo = UserRepository(conn)
+        chat_repo = ChatRepository(conn)
+
+        # Create high-level service
+        memory_service = MemoryService(
+            conversation_repo=conversation_repo,
+            memory_repo=memory_repo,
+            working_memory_repo=working_memory_repo,
+            user_repo=user_repo,
+            chat_repo=chat_repo,
+            embedding_provider=embedding_provider,
+            config=config,
+        )
+
     return Dependencies(
         config=config,
         openai_chat=openai_chat,
@@ -189,4 +249,5 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
         notification_manager=notification_manager,
         diary=diary,
         extractor_registry=extractor_registry,
+        memory_service=memory_service,
     )

@@ -117,14 +117,56 @@ phone = ""
 database_directory = "data/tdlib"
 
 # ============================================================
-# ПАМЯТЬ / MEMORY SYSTEM
+# ПАМЯТЬ / MEMORY SYSTEM (ТЗ-002)
 # ============================================================
 
+[memory]
+# ВАЖНО: kunipy поддерживает НОВУЮ систему памяти с двумя бэкендами:
+# IMPORTANT: kunipy supports NEW memory system with two backends:
+# 1. SQLite - для небольшого объёма памяти (до ~1000 записей)
+# 2. PostgreSQL - для больших объёмов (10,000+ записей)
+
+# Включить новую систему памяти
+# Enable new memory system
+enabled = true
+
+# Бэкенд хранения / Storage backend
+# "sqlite" - SQLite (по умолчанию, для небольших объёмов)
+# "postgresql" - PostgreSQL (для больших объёмов, требует установки)
+backend = "sqlite"
+
+# Путь к SQLite базе (используется если backend = "sqlite")
+# Path to SQLite database (used when backend = "sqlite")
+db_path = "data/memory.db"
+
+# URL подключения к PostgreSQL (используется если backend = "postgresql")
+# PostgreSQL connection URL (used when backend = "postgresql")
+# Формат: postgresql://user:password@host:port/database
+# Format: postgresql://user:password@host:port/database
+# postgres_url = "postgresql://kunipy:kunipy@localhost:5432/kunipy"
+
+# Минимальная схожесть для поиска воспоминаний (0.0 - 1.0)
+# Minimum similarity for memory search (0.0 - 1.0)
+min_similarity = 0.5
+
+# Telegram ID владельца для desktop_owner_telegram_id (опционально)
+# Owner's Telegram ID for desktop_owner_telegram_id (optional)
+# desktop_owner_telegram_id = "123456789"
+
+# ПРИМЕЧАНИЕ: Для миграции с SQLite на PostgreSQL:
+# NOTE: To migrate from SQLite to PostgreSQL:
+#   1. Установите PostgreSQL и создайте базу данных
+#   2. Настройте postgres_url выше
+#   3. Запустите: python migrate_to_postgres.py
+#   4. Измените backend на "postgresql"
+# См. docs/POSTGRESQL_MIGRATION.md для подробностей
+# See docs/POSTGRESQL_MIGRATION.md for details
+
 [diary]
-# ВАЖНО: kunipy поддерживает ДВЕ системы памяти одновременно:
-# IMPORTANT: kunipy supports TWO memory systems simultaneously:
-# 1. Legacy Diary (file-based, *.md files)
-# 2. New ChromaDB (vector database, automatic)
+# LEGACY система Diary (file-based, *.md files)
+# LEGACY Diary system (file-based, *.md files)
+# Работает параллельно с новой memory системой выше
+# Works in parallel with the new memory system above
 
 # Включить legacy diary систему
 # Enable legacy diary system
@@ -141,12 +183,6 @@ min_relatedness = 0.5
 # Порог плагиата (похожести) для пропуска дублей (0.0 - 1.0)
 # Plagiarism threshold for skipping duplicates (0.0 - 1.0)
 plagiarism_threshold = 0.95
-
-# Новая ChromaDB память работает автоматически в data/chroma/
-# New ChromaDB memory works automatically in data/chroma/
-# Миграция из legacy diary опциональна:
-# Migration from legacy diary is optional:
-#   python migrate_diary.py --kuni-dir ./diary
 
 # ============================================================
 # БЛОКИРОВКА ДОСТУПА / LOCKDOWN
@@ -345,7 +381,7 @@ check_chats_on_startup = true
 # ├── diary/                   # Legacy diary (если enabled)
 # │   └── *.md                 # Файлы памяти
 # ├── data/                    # Runtime data (gitignored)
-# │   ├── chroma/             # Новая ChromaDB память (автоматически)
+# │   ├── memory.db           # SQLite память (если backend = "sqlite")
 # │   ├── delivery.db         # Delivery tracking
 # │   ├── proxy/              # Proxy server data
 # │   └── tdlib/              # Telegram session
@@ -353,7 +389,9 @@ check_chats_on_startup = true
 # │   ├── character_base.md
 # │   ├── character_appearance.md
 # │   └── system.md
-# └── logs/                   # Логи приложения
+# ├── logs/                   # Логи приложения
+# └── docs/                   # Документация
+#     └── POSTGRESQL_MIGRATION.md  # Руководство по миграции на PostgreSQL
 #
 # ============================================================
 # БЫСТРЫЙ СТАРТ / QUICK START

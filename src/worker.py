@@ -45,6 +45,7 @@ class Worker:
         diary: Diary | None,
         config: Config,
         working_memory_context: str | None = None,
+        memory_service=None,  # ТЗ-002: Memory service injection
     ):
         """Initialize worker with dependencies.
 
@@ -56,6 +57,7 @@ class Worker:
             diary: Diary for memory (optional)
             config: Application configuration
             working_memory_context: Pre-loaded working memory context (optional)
+            memory_service: Memory service for ТЗ-002 (optional)
         """
         self.name = name
         self.openai = openai
@@ -64,6 +66,7 @@ class Worker:
         self.diary = diary
         self.config = config
         self._working_memory_context = working_memory_context or ""
+        self.memory_service = memory_service  # ТЗ-002
 
         self._running = False
         self._sleeping = False
@@ -247,6 +250,21 @@ class Worker:
                 content=content,
                 tool_calls=tool_calls if tool_calls else None
             ))
+
+            # Store assistant message to memory (ТЗ-002)
+            if self.memory_service and content:
+                try:
+                    await self.memory_service.store_message(
+                        user_id=str(chat_id),  # Use chat_id as fallback for bot messages
+                        chat_id=str(chat_id),
+                        channel="telegram",
+                        role="assistant",
+                        content=content,
+                        metadata={"has_tool_calls": bool(tool_calls)}
+                    )
+                    logger.debug(f"Stored assistant message to memory system")
+                except Exception as e:
+                    logger.warning(f"Failed to store assistant message to memory: {e}")
 
             # Execute tools if called
             if tool_calls:

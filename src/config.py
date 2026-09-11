@@ -168,6 +168,14 @@ class Config:
     timezone: str = "UTC"
     _timezone_info: ZoneInfo | None = field(default=None, init=False, repr=False)
 
+    # Memory system (ТЗ-002)
+    memory_enabled: bool = True
+    memory_backend: str = "postgresql"  # "sqlite" or "postgresql"
+    memory_db_path: str = "data/memory.db"  # For SQLite backend
+    memory_postgres_url: str = "postgresql://kunipy:kunipy@localhost:5432/kunipy"  # For PostgreSQL backend
+    memory_min_similarity: float = 0.5
+    desktop_owner_telegram_id: str | None = None
+
     @property
     def timezone_info(self) -> ZoneInfo:
         """Get validated ZoneInfo instance for application timezone.
@@ -317,6 +325,22 @@ class Config:
         # Validate timezone immediately on load
         _ = cfg.timezone_info
 
+        # Memory system (ТЗ-002)
+        memory_cfg = data.get("memory", {})
+        cfg.memory_enabled = memory_cfg.get("enabled", cfg.memory_enabled)
+        cfg.memory_backend = memory_cfg.get("backend", cfg.memory_backend)
+        cfg.memory_db_path = memory_cfg.get("db_path", cfg.memory_db_path)
+        cfg.memory_postgres_url = memory_cfg.get("postgres_url", cfg.memory_postgres_url)
+        cfg.memory_min_similarity = memory_cfg.get("min_similarity", cfg.memory_min_similarity)
+        cfg.desktop_owner_telegram_id = memory_cfg.get("desktop_owner_telegram_id", cfg.desktop_owner_telegram_id)
+
+        # Embedding model (ТЗ-002)
+        embedding_cfg = data.get("embedding", {})
+        embedding_endpoint = embedding_cfg.get("endpoint", {})
+        cfg.embedding.endpoint.base_url = embedding_endpoint.get("base_url", cfg.embedding.endpoint.base_url)
+        cfg.embedding.endpoint.bearer_key = embedding_endpoint.get("bearer_key", cfg.embedding.endpoint.bearer_key)
+        cfg.embedding.model = embedding_cfg.get("model", cfg.embedding.model)
+
         return cfg
 
 
@@ -358,6 +382,21 @@ def save_config(cfg: Config, path: Path | str = "config.toml") -> None:
                 "base_url": cfg.llm.endpoint.base_url,
                 "bearer_key": cfg.llm.endpoint.bearer_key,
             },
+        },
+        "embedding": {
+            "model": cfg.embedding.model,
+            "endpoint": {
+                "base_url": cfg.embedding.endpoint.base_url,
+                "bearer_key": cfg.embedding.endpoint.bearer_key,
+            },
+        },
+        "memory": {
+            "enabled": cfg.memory_enabled,
+            "backend": cfg.memory_backend,
+            "db_path": cfg.memory_db_path,
+            "postgres_url": cfg.memory_postgres_url,
+            "min_similarity": cfg.memory_min_similarity,
+            "desktop_owner_telegram_id": cfg.desktop_owner_telegram_id,
         },
         "character": {
             "name": cfg.character_name,

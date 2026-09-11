@@ -100,6 +100,25 @@ class TelegramEventHandler:
 
         logger.info(f"Processing message from chat {msg.chat_id}, user {msg.user_id}")
 
+        # Store incoming message to memory (ТЗ-002)
+        if self._deps.memory_service:
+            try:
+                await self._deps.memory_service.store_message(
+                    user_id=str(msg.user_id),
+                    chat_id=str(msg.chat_id),
+                    channel="telegram",
+                    role="user",
+                    content=msg.text or "",
+                    message_id=str(getattr(msg, 'message_id', getattr(msg, 'id', 0))),
+                    metadata={
+                        "media_type": msg.media.get("type") if msg.media else None,
+                        "is_voice": bool(msg.media and msg.media.get("type") == "voice"),
+                    }
+                )
+                logger.debug(f"Stored user message to memory system")
+            except Exception as e:
+                logger.warning(f"Failed to store message to memory: {e}")
+
         # Mark message as read immediately and show typing indicator
         message_id = getattr(msg, 'message_id', getattr(msg, 'id', 0))
         if message_id and self._deps.telegram_client:

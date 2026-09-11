@@ -16,11 +16,12 @@ Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI wit
 - Активация: `diary.enabled = true` в config.toml
 - **Миграция НЕ требуется** — продолжает работать с текущими данными
 
-### 2. New Memory System (ChromaDB)
+### 2. New Memory System (ТЗ-002)
 - ✅ Полностью интегрирована в DI container
-- Директория: `data/chroma/` (автоматически создаётся)
-- Активация: Всегда активна
+- ✅ **Поддержка SQLite и PostgreSQL**
+- Backend: Выбирается через `MEMORY_BACKEND` (sqlite/postgresql)
 - Semantic search, embeddings, multi-level memory
+- **PostgreSQL рекомендуется для больших объемов данных** (10,000+ воспоминаний)
 
 ### Как использовать?
 
