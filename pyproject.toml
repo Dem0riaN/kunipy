@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=1.24.0",
     "aiotdlib>=0.20.0",  # TDLib async client
     "prometheus_client>=0.20.0",
+    "Pillow>=10.0.0",  # Image processing (WebP decode, format conversion)
 ]
 
 [project.optional-dependencies]

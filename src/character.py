@@ -145,32 +145,23 @@ def build_system_prompt(
     working_memory_text: str = "",
     diary_context: str = "",
     base_dir: str = ".",
+    prompts_dir: str = "prompts",
 ) -> str:
-    """Build the full system prompt: character persona + tool usage notes +
-    working memory + relevant diary snippets."""
+    """Build the full system prompt: main system instructions + character persona +
+    working memory + relevant diary snippets.
+
+    This now uses the prompts/ directory structure from original Kuni:
+    - prompts/system.md - main workflow instructions (universal)
+    - character_base.md + character_appearance.md - character persona
+    - working memory and diary context
+    """
+    from prompt_loader import build_full_system_prompt
+
     persona = load_character_prompt(config, base_dir)
 
-    parts = [persona]
-
-    tools_note = (
-        "\n# Tools\n"
-        "You have tools available to act in the real world (Telegram, image "
-        "generation, voice, web search, etc). Use `send_telegram_message` to "
-        "actually deliver a reply -- plain text you return without calling a "
-        "tool is treated as your private internal reasoning and is NOT shown "
-        "to anyone."
+    return build_full_system_prompt(
+        character_persona=persona,
+        working_memory=working_memory_text,
+        diary_context=diary_context,
+        prompts_dir=prompts_dir,
     )
-    if config.remind_use_ask:
-        tools_note += (
-            " Use `ask` to search your own diary for related memories when "
-            "something feels like it should be familiar."
-        )
-    parts.append(tools_note)
-
-    if working_memory_text.strip():
-        parts.append(f"\n<things_to_remember>\n{working_memory_text.strip()}\n</things_to_remember>")
-
-    if diary_context.strip():
-        parts.append(f"\n<related_memories>\n{diary_context.strip()}\n</related_memories>")
-
-    return "\n".join(parts)

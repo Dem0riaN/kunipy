@@ -27,6 +27,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,24 +37,12 @@ from aiotdlib.api import types as td
 from aiotdlib.api.errors.error import AioTDLibError
 
 from .config import get_config
+from .domain.models import TelegramMessage
 
 logger = logging.getLogger(__name__)
 
 # Alias kept for callers that want to catch Telegram-specific errors.
 TDLibError = AioTDLibError
-
-
-@dataclass
-class TelegramMessage:
-    """A Telegram message (simplified for internal use)."""
-    id: int
-    chat_id: int
-    sender_id: int
-    date: int  # Unix timestamp
-    content: str  # text content
-    is_outgoing: bool = False
-    reply_to_message_id: int | None = None
-    media: dict[str, Any] | None = None
 
 
 @dataclass
@@ -601,6 +590,38 @@ class TelegramClient:
                 if sizes:
                     largest = max(sizes, key=lambda s: s.width * s.height)
                     media = {"type": "photo", "file_id": largest.photo.id}
+            elif isinstance(msg.content, td.MessageSticker):
+                sticker = msg.content.sticker
+                # Check sticker type instead of is_animated/is_video flags
+                is_animated = isinstance(sticker.format, td.StickerFormatTgs)
+                is_video = isinstance(sticker.format, td.StickerFormatWebm)
+                media = {
+                    "type": "sticker",
+                    "file_id": sticker.sticker.id,
+                    "emoji": sticker.emoji or "",
+                    "width": sticker.width,
+                    "height": sticker.height,
+                    "is_animated": is_animated,
+                    "is_video": is_video,
+                }
+            elif isinstance(msg.content, td.MessageAnimation):
+                animation = msg.content.animation
+                media = {
+                    "type": "animation",
+                    "file_id": animation.animation.id,
+                    "width": animation.width,
+                    "height": animation.height,
+                    "duration": animation.duration,
+                    "mime_type": animation.mime_type,
+                }
+            elif isinstance(msg.content, td.MessageDocument):
+                document = msg.content.document
+                media = {
+                    "type": "document",
+                    "file_id": document.document.id,
+                    "file_name": document.file_name,
+                    "mime_type": document.mime_type,
+                }
 
         sender_id = 0
         if isinstance(msg.sender_id, td.MessageSenderUser):
@@ -613,13 +634,13 @@ class TelegramClient:
             reply_to_message_id = msg.reply_to.message_id
 
         return TelegramMessage(
-            id=msg.id,
+            message_id=msg.id,
             chat_id=msg.chat_id,
-            sender_id=sender_id,
-            date=msg.date,
-            content=content,
+            user_id=sender_id,
+            text=content,
+            timestamp=datetime.fromtimestamp(msg.date, tz=UTC),
             is_outgoing=bool(getattr(msg, "is_outgoing", False)),
-            reply_to_message_id=reply_to_message_id,
+            reply_to=reply_to_message_id,
             media=media,
         )
 

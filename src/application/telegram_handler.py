@@ -38,11 +38,12 @@ class TelegramEventHandler:
         self._deps = deps
         self._current_chat_id: int | None = None
 
-        # Initialize media service
+        # Initialize media service with extractor registry
         self._media_service = MediaService(
             telegram_client=deps.telegram_client,
             openai_client=deps.openai_chat,
-            config=deps.config
+            config=deps.config,
+            extractor_registry=deps.extractor_registry
         )
 
     async def handle_event(self, event: dict) -> None:
@@ -79,22 +80,37 @@ class TelegramEventHandler:
         """
         # Ignore own messages
         if msg.is_outgoing:
+            logger.debug(f"Ignoring outgoing message from chat {msg.chat_id}")
             return
 
         # Check lockdown mode
         if not await self._is_accessible(msg.chat_id):
-            logger.debug(f"Message from {msg.chat_id} blocked by lockdown")
+            logger.info(f"Message from {msg.chat_id} blocked by lockdown")
             return
 
         # Apply notification filter
         if not await self._check_notification_filter(msg.chat_id):
-            logger.debug(f"Message from {msg.chat_id} filtered out")
+            logger.info(f"Message from {msg.chat_id} filtered by notification filter")
             return
 
         # Random ignore chance (except for papik)
         if await self._should_ignore_randomly(msg):
-            logger.debug(f"Randomly ignoring message from {msg.chat_id}")
+            logger.info(f"Randomly ignoring message from {msg.chat_id}")
             return
+
+        logger.info(f"Processing message from chat {msg.chat_id}, user {msg.user_id}")
+
+        # Mark message as read immediately and show typing indicator
+        message_id = getattr(msg, 'message_id', getattr(msg, 'id', 0))
+        if message_id and self._deps.telegram_client:
+            try:
+                await self._deps.telegram_client.view_messages(msg.chat_id, [message_id])
+                logger.debug(f"Marked message {message_id} in chat {msg.chat_id} as read")
+                # Show typing indicator immediately
+                await self._deps.telegram_client.send_typing(msg.chat_id)
+                logger.debug(f"Sent typing indicator to chat {msg.chat_id}")
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
+                logger.warning(f"Failed to mark message as read or send typing: {e}")
 
         # Process media (transcribe voice, describe photos)
         await self._process_media(msg)
@@ -102,10 +118,17 @@ class TelegramEventHandler:
         # Build notification
         notification_text = await self._format_notification(msg)
         if not notification_text:
+            logger.warning(f"Failed to format notification for chat {msg.chat_id}")
             return
+
+        logger.debug(f"Notification text created: {notification_text[:100]}...")
 
         # Determine priority
         priority = await self._calculate_priority(msg)
+        logger.debug(f"Message priority: {priority}")
+
+        # Check if message has image media for multimodal content
+        has_image_media = msg.media and msg.media.get("type") in ("photo", "sticker")
 
         # Create notification with chat pin
         notification = Notification(
@@ -114,12 +137,15 @@ class TelegramEventHandler:
             pin=f"chat_{msg.chat_id}",  # Worker affinity by chat
             metadata={
                 "chat_id": msg.chat_id,
-                "message_id": msg.message_id,
+                "message_id": getattr(msg, 'message_id', getattr(msg, 'id', 0)),
                 "sender_id": msg.user_id,
+                "has_image_media": has_image_media,
+                "telegram_message": msg if has_image_media else None,
             }
         )
 
         # Pass to notification manager
+        logger.info(f"Passing notification to manager for chat {msg.chat_id}")
         await self._deps.notification_manager.pass_notification(
             message=notification.message,
             priority=notification.priority,
@@ -127,7 +153,7 @@ class TelegramEventHandler:
             metadata=notification.metadata
         )
 
-        logger.debug(f"Notification created for chat {msg.chat_id}, priority={priority}")
+        logger.info(f"Notification passed successfully for chat {msg.chat_id}, priority={priority}")
 
     async def send_startup_notifications(self) -> None:
         """Send notifications for unread chats on startup.
@@ -169,7 +195,9 @@ class TelegramEventHandler:
         Returns:
             True if accessible
         """
-        return await self._check_lockdown(chat_id, self._deps.config.lockdown)
+        result = await self._check_lockdown(chat_id, self._deps.config.lockdown)
+        logger.debug(f"Lockdown check for chat {chat_id}: mode={self._deps.config.lockdown.value}, papik_chat_id={self._deps.config.papik_chat_id}, result={result}")
+        return result
 
     async def _check_notification_filter(self, chat_id: int) -> bool:
         """Check if chat should generate notifications.
@@ -198,6 +226,7 @@ class TelegramEventHandler:
             return True
 
         if mode.value == "papik_only":
+            # Allow papik's chat (can be user ID or chat ID)
             return chat_id == self._deps.config.papik_chat_id
 
         if mode.value == "contacts_only":
@@ -221,13 +250,19 @@ class TelegramEventHandler:
         Returns:
             True if should ignore
         """
-        if msg.user_id == self._deps.config.papik_chat_id:
+        # Check both user_id and chat_id for papik
+        if hasattr(msg, 'user_id') and msg.user_id == self._deps.config.papik_chat_id:
+            return False
+        if msg.chat_id == self._deps.config.papik_chat_id:
             return False
 
         return random.random() < self._deps.config.suggest_ignore_chance
 
     async def _process_media(self, msg: TelegramMessage) -> None:
-        """Process media in message (voice transcription, photo description).
+        """Process media in message (voice transcription, text documents).
+
+        For photos/stickers, media metadata is preserved for multimodal content creation.
+        This method only processes voice and text documents that need preprocessing.
 
         Args:
             msg: Message (modified in place)
@@ -236,6 +271,7 @@ class TelegramEventHandler:
             return
 
         media_type = msg.media.get("type")
+        logger.info(f"Processing media type: {media_type}")
 
         # Transcribe voice messages
         if media_type == "voice" and not msg.text:
@@ -243,11 +279,17 @@ class TelegramEventHandler:
             if transcription:
                 msg.text = transcription
 
-        # Describe photos
-        elif media_type == "photo":
-            description = await self._media_service.describe_photo_message(msg)
-            if description:
-                msg.text = f"{msg.text}\n[photo] {description}".strip()
+        # Read text documents (.txt, .md)
+        elif media_type == "document":
+            logger.info(f"Reading text document, file_name: {msg.media.get('file_name')}")
+            doc_text = await self._media_service.read_text_document(msg)
+            logger.info(f"Document text length: {len(doc_text) if doc_text else 0}")
+            if doc_text:
+                msg.text = f"{msg.text}\n{doc_text}".strip()
+                logger.info("Updated msg.text with document content")
+
+        # Photos and stickers: keep media metadata for multimodal content creation
+        # (handled in worker when creating Message objects)
 
     async def _format_notification(self, msg: TelegramMessage) -> str:
         """Format message as notification string.
@@ -263,11 +305,15 @@ class TelegramEventHandler:
 
         # Get sender info
         sender_name = "Unknown"
-        if msg.user_id:
-            user = await self._deps.telegram_client.get_user(msg.user_id)
+        sender_id = msg.user_id
+        if sender_id:
+            user = await self._deps.telegram_client.get_user(sender_id)
             if user:
                 sender_name = f"{user.first_name} {user.last_name}".strip() or \
-                              user.username or f"user_{msg.user_id}"
+                              user.username or f"user_{sender_id}"
+
+        # Get message text (handle both 'text' and 'content' fields)
+        msg_text = getattr(msg, 'text', getattr(msg, 'content', ''))
 
         # Format based on chat type
         is_dm = chat and chat.type == "private"
@@ -276,7 +322,7 @@ class TelegramEventHandler:
             return (
                 f'<notification chat_id="{msg.chat_id}">\n'
                 f"You received a direct message from {sender_name} (chat_id={msg.chat_id})\n"
-                f"{msg.text}\n"
+                f"{msg_text}\n"
                 f"</notification>\n"
                 f"You don't have any chat open. Use #open tool to open the chat"
             )
@@ -284,7 +330,7 @@ class TelegramEventHandler:
             return (
                 f'<notification chat_id="{msg.chat_id}">\n'
                 f'{sender_name} sent a message in group chat "{chat_title}" (chat_id={msg.chat_id})\n'
-                f"{msg.text}\n"
+                f"{msg_text}\n"
                 f"</notification>\n"
                 f"You don't have any chat open. Use #open tool to open the chat"
             )
@@ -301,14 +347,10 @@ class TelegramEventHandler:
         priority = 0
 
         # Papik (owner) gets highest priority
-        if msg.user_id == self._deps.config.papik_chat_id:
+        # Check both user_id/sender_id and chat_id
+        sender_id = msg.user_id
+        if sender_id == self._deps.config.papik_chat_id or msg.chat_id == self._deps.config.papik_chat_id:
             priority = 1000
-
-        # Pinned chats get elevated priority
-        elif self._deps.config.wake_up_on_pinned_chat:
-            chat = await self._deps.telegram_client.get_chat(msg.chat_id)
-            if chat and chat.is_pinned:
-                priority = 100
 
         return priority
 

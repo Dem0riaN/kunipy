@@ -72,6 +72,7 @@ class Config:
     diary_dir: str = "diary"
     diary_min_relatedness: float = 0.5
     diary_plagiarism_threshold: float = 0.95
+    remind_use_ask: bool = True
 
     # Lockdown
     lockdown: LockdownMode = LockdownMode.NONE
@@ -89,19 +90,28 @@ class Config:
 
     # Image generation
     image_generator: EndpointAndModel = field(default_factory=EndpointAndModel)
+    sd_endpoint: EndpointAndModel = field(default_factory=EndpointAndModel)
+    sd_checkpoint: str = ""
 
     # Hearing (transcription)
     hearing: EndpointAndModel = field(default_factory=EndpointAndModel)
 
     # Vision
     vision: EndpointAndModel = field(default_factory=EndpointAndModel)
+    llm_image_to_text: EndpointAndModel = field(default_factory=EndpointAndModel)
+    llm_image_to_text_cheap: EndpointAndModel = field(default_factory=EndpointAndModel)
+
+    # Audio transcription
+    llm_audio_to_text: EndpointAndModel = field(default_factory=EndpointAndModel)
 
     # TTS (record_voice)
     record_voice_backend: TTSBackend = TTSBackend.ELEVENLABS
     record_voice_elevenlabs_key: str = ""
     record_voice_elevenlabs_voice_id: str = ""
+    record_voice_elevenlabs_voice: str = ""
     record_voice_elevenlabs_model_id: str = "eleven_turbo_v2_5"
     record_voice_openai_key: str = ""
+    record_voice_openai_url: str = "https://api.openai.com/v1"
     record_voice_openai_model: str = "tts-1"
     record_voice_openai_voice: str = "nova"
     record_voice_openai_format: str = "opus"
@@ -116,6 +126,32 @@ class Config:
     worker_sleep_enabled: bool = False
     worker_sleep_timeout: int = 300
     worker_count: int = 1
+
+    # LLM parameters
+    request_timeout_secs: int = 120
+    llm_temperature: float = 1.0
+    llm_top_p: float = 1.0
+    llm_top_k: int = 0
+    llm_min_p: float = 0.0
+    llm_presence_penalty: float = 0.0
+    llm_repetition_penalty: float = 1.0
+
+    # Anti-repeat system
+    anti_repeat_max_history: int = 5
+    anti_repeat_trigger_max: float = 0.85
+    anti_repeat_trigger_avg: float = 0.70
+
+    # Typing simulation
+    typing_simulation_min_wpm: int = 40
+    typing_simulation_max_wpm: int = 80
+
+    # Web search
+    web_search_ollama_key: str = ""
+
+    # Document processing
+    document_processing_enabled: bool = True
+    document_max_size_bytes: int = 1024 * 1024  # 1MB physical file limit
+    document_max_context_chars: int = 50000      # ~12.5k tokens for LLM context
 
     # Startup behavior
     check_chats_on_startup: bool = True
@@ -183,6 +219,8 @@ class Config:
         # Character
         character = data.get("character", {})
         cfg.character_name = character.get("name", cfg.character_name)
+        # Owner (papik) - read from [character] section
+        cfg.papik_chat_id = character.get("papik_chat_id", cfg.papik_chat_id)
 
         # Telegram
         telegram = data.get("telegram", {})
@@ -203,7 +241,7 @@ class Config:
         lockdown_cfg = data.get("lockdown", {})
         mode_str = lockdown_cfg.get("mode", "none")
         cfg.lockdown = LockdownMode(mode_str) if mode_str else LockdownMode.NONE
-        cfg.papik_chat_id = lockdown_cfg.get("papik_chat_id", cfg.papik_chat_id)
+        # papik_chat_id already loaded from top-level earlier
 
         # Capabilities
         capabilities = data.get("capabilities", {})

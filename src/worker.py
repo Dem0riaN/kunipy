@@ -10,6 +10,8 @@ import logging
 import random
 from typing import Any
 
+import src.tools as tools_module
+
 from .character import build_system_prompt
 from .config import Config
 from .diary import Diary
@@ -18,7 +20,6 @@ from .interfaces.worker import INotificationManager
 from .notification_manager import Notification
 from .openai_chat import Message, OpenAIChat
 from .telegram_client import TelegramClient
-import src.tools as tools_module
 
 logger = logging.getLogger(__name__)
 
@@ -143,27 +144,44 @@ class Worker:
         chat = await self.telegram.get_chat(chat_id) if self.telegram else None
         is_admin = chat_id == self.config.papik_chat_id
 
+        # Create user message (handle multimodal content for photos/stickers)
+        user_message_content = notification.message
+
+        # Check if notification has image media that should be included
+        if notification.metadata and notification.metadata.get("has_image_media"):
+            # Extract TelegramMessage from metadata if available
+            telegram_msg = notification.metadata.get("telegram_message")
+            if telegram_msg and telegram_msg.media:
+                media_type = telegram_msg.media.get("type")
+                if media_type in ("photo", "sticker"):
+                    # Try to create multimodal content
+                    try:
+                        from .application.media_service import MediaService
+                        from .openai_chat import create_multimodal_content
+
+                        media_service = MediaService(
+                            telegram_client=self.telegram,
+                            openai_client=self.openai,
+                            config=self.config
+                        )
+
+                        result = await media_service.get_image_bytes_and_mime(telegram_msg)
+                        if result:
+                            image_bytes, mime_type = result
+                            # Create multimodal content with text + image
+                            user_message_content = create_multimodal_content(
+                                text=notification.message,
+                                image_data=image_bytes,
+                                mime_type=mime_type
+                            )
+                            logger.info(f"Created multimodal content for {media_type}")
+                    except (ValueError, KeyError, TypeError, RuntimeError) as e:
+                        logger.warning(f"Failed to create multimodal content: {e}")
+                        # Fall back to text-only
+
         # Maintain per-chat history
         history = self.temporary_context.setdefault(chat_id, [])
-        history.append(Message(role="user", content=notification.message))
-
-        # Build tools
-        tools = None
-        tool_schemas = None
-        if self.telegram:
-            recent_bot_messages = [
-                m.content for m in history
-                if m.role == "assistant" and (m.content or "").strip()
-            ]
-            tools = tools_module.create_default_tools(
-                telegram=self.telegram,
-                diary=self.diary,
-                openai=self.openai,
-                current_chat=chat,
-                is_admin=is_admin,
-                recent_bot_messages=recent_bot_messages,
-            )
-            tool_schemas = tools.to_json_schemas()
+        history.append(Message(role="user", content=user_message_content))
 
         system_prompt = await self._build_system_prompt(notification)
         messages = list(history)
@@ -174,8 +192,30 @@ class Worker:
 
         # Tool-calling loop
         for iteration in range(MAX_TOOL_ITERATIONS):
+            # Rebuild tools with current history to get fresh recent_bot_messages
+            tools = None
+            tool_schemas = None
+            if self.telegram:
+                recent_bot_messages = [
+                    m.content for m in history
+                    if m.role == "assistant" and (m.content or "").strip()
+                ]
+                tools = tools_module.create_default_tools(
+                    telegram=self.telegram,
+                    diary=self.diary,
+                    openai=self.openai,
+                    current_chat=chat,
+                    is_admin=is_admin,
+                    recent_bot_messages=recent_bot_messages,
+                )
+                tool_schemas = tools.to_json_schemas()
+
+            # Add messages_epilogue.md to messages before sending to LLM
+            from prompt_loader import build_messages_with_epilogue
+            messages_with_epilogue = build_messages_with_epilogue(messages)
+
             response = await self.openai.chat(
-                messages=messages,
+                messages=messages_with_epilogue,
                 system_prompt=system_prompt,
                 tools=tool_schemas,
                 temperature=0.7,
@@ -189,7 +229,6 @@ class Worker:
             tui_printer.update(response)
 
             choice = response.choices[0]
-            _ = choice.get("finish_reason")  # Used by upstream, not here
             message = choice.get("message", {})
             content = message.get("content", "")
             tool_calls = message.get("tool_calls", [])

@@ -137,6 +137,33 @@ class OpenAITools:
                 ))
         return results
 
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        """Call a single tool by name with arguments.
+
+        Args:
+            name: Tool name
+            args: Tool arguments
+
+        Returns:
+            Tool result (str or dict)
+
+        Raises:
+            KeyError: If tool not found
+            Exception: If tool execution fails
+        """
+        tool = self._tools.get(name)
+        if not tool:
+            raise KeyError(f"Tool '{name}' not found")
+
+        ctx = ToolContext(
+            args=args,
+            logger=logger,
+            temporary_context=[],
+            all_tool_calls=[],
+        )
+        result = await tool.handler(ctx)
+        return result
+
 
 # ============================================================
 # Tool factories
@@ -213,6 +240,9 @@ def _check_anti_repeat(text: str, recent_bot_messages: list[str] | None) -> str 
     Uses plain text similarity (difflib) rather than embeddings, trading a
     bit of semantic precision for zero extra network round-trips on every
     single message send.
+
+    If repetition is detected, returns the anti_repeat.md prompt content
+    to guide the LLM toward better behavior.
     """
     if not recent_bot_messages or not text.strip():
         return None
@@ -230,10 +260,21 @@ def _check_anti_repeat(text: str, recent_bot_messages: list[str] | None) -> str 
     avg_ratio = sum(ratios) / len(ratios)
 
     if max_ratio >= config.anti_repeat_trigger_max or avg_ratio >= config.anti_repeat_trigger_avg:
-        return (
-            "Error: this message is too similar to something you already said recently in this chat "
-            f"(similarity={max_ratio:.2f}). Say something meaningfully different, or don't send anything."
+        # Load anti_repeat prompt from prompts/anti_repeat.md
+        from prompt_loader import load_anti_repeat_prompt
+
+        anti_repeat_guidance = load_anti_repeat_prompt()
+
+        base_error = (
+            f"Error: this message is too similar to something you already said recently in this chat "
+            f"(similarity={max_ratio:.2f})."
         )
+
+        if anti_repeat_guidance:
+            return f"{base_error}\n\n{anti_repeat_guidance}"
+        else:
+            return f"{base_error} Say something meaningfully different, or don't send anything."
+
     return None
 
 

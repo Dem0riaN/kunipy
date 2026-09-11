@@ -293,8 +293,16 @@ def main():
 
     args = parser.parse_args()
 
+    # Map log level string to logging constant
+    log_levels = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+    }
+
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
+        level=log_levels.get(args.log_level, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 

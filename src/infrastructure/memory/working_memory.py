@@ -129,4 +129,3 @@ class WorkingMemory(IWorkingMemory):
         when long-term session recovery is needed (ТЗ-002 punkt 7.6).
         """
         logger.debug("save_to_file called (no-op - persistence not yet implemented)")
-        pass

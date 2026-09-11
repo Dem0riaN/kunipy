@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +39,8 @@ from .character import build_system_prompt
 from .config import Config, EndpointAndModel, get_config
 from .diary import Diary
 from .openai_chat import Message, OpenAIChat
+
 # Import from parent-level tools.py, not tools package
-import sys
-from importlib import import_module
 _tools_mod = import_module('.tools', 'src')
 if hasattr(_tools_mod, '__path__'):
     # It's a package, need to get the module

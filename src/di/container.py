@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from ..config import Config
 
 if TYPE_CHECKING:
+    from ..application.media.registry import MediaExtractorRegistry
     from ..diary import Diary
 
 from ..interfaces import (
@@ -57,6 +58,9 @@ class Dependencies:
 
     # Worker management
     notification_manager: INotificationManager
+
+    # Media extraction (ТЗ-005)
+    extractor_registry: MediaExtractorRegistry
 
     # Legacy components (to be refactored)
     diary: Diary | None = None  # Will be refactored to use IMemoryStore
@@ -151,6 +155,19 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
     # Worker notification manager
     notification_manager = NotificationManager()
 
+    # Media extractor registry (ТЗ-005)
+    from ..application.media.registry import MediaExtractorRegistry
+    from ..application.media.txt_extractor import TxtExtractor
+
+    extractor_registry = MediaExtractorRegistry()
+
+    # Register TxtExtractor with config limits
+    txt_extractor = TxtExtractor(
+        max_size_bytes=config.document_max_size_bytes,
+        max_context_chars=config.document_max_context_chars
+    )
+    extractor_registry.register(txt_extractor)
+
     # Legacy diary (will be migrated to new memory system in ТЗ-002)
     diary = None
     if config.diary_enabled:
@@ -171,4 +188,5 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
         delivery_tracker=delivery_tracker,
         notification_manager=notification_manager,
         diary=diary,
+        extractor_registry=extractor_registry,
     )

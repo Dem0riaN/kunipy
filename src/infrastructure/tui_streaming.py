@@ -41,19 +41,27 @@ class TuiStreamingPrinter:
         self._thinking_time_printed = False
         self._tool_call_state: dict[int, dict] = {}
 
-    def update(self, response: dict[str, Any]) -> None:
+    def update(self, response: dict[str, Any] | Any) -> None:
         """Update display with new response chunk.
 
         Args:
-            response: LLM response dictionary with choices
+            response: LLM response dictionary with choices or ChatResponse object
         """
-        if not response.get("choices"):
+        # Handle both dict and ChatResponse object
+        if hasattr(response, 'choices'):
+            choices = response.choices
+        elif isinstance(response, dict):
+            choices = response.get("choices", [])
+        else:
             return
 
-        msg = response["choices"][0].get("message", {})
+        if not choices:
+            return
+
+        msg = choices[0].get("message", {})
 
         # --- reasoning_content (DeepSeek style) ---
-        reasoning_content = msg.get("reasoning_content", "")
+        reasoning_content = msg.get("reasoning_content") or ""
         if len(reasoning_content) > self._printed_reasoning_content:
             if self._printed_reasoning_content == 0:
                 self._print_thinking_time()
@@ -66,7 +74,7 @@ class TuiStreamingPrinter:
             self._printed_reasoning_content = len(reasoning_content)
 
         # --- reasoning (standard field) ---
-        reasoning = msg.get("reasoning", "")
+        reasoning = msg.get("reasoning") or ""
         if len(reasoning) > self._printed_reasoning:
             if self._printed_reasoning == 0 and not self._in_reasoning:
                 self._print_thinking_time()
@@ -79,7 +87,7 @@ class TuiStreamingPrinter:
             self._printed_reasoning = len(reasoning)
 
         # --- content ---
-        content = msg.get("content", "")
+        content = msg.get("content") or ""
         if len(content) > self._printed_content:
             if self._printed_content == 0:
                 if not self._in_reasoning:
