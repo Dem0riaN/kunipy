@@ -130,7 +130,9 @@ class OpenAIChat:
 
         payload: dict = {
             "model": self.endpoint.model,
-            "messages": [{"role": "system", "content": system_prompt}] + [m.to_dict() for m in messages],
+            "messages": [{"role": "system", "content": system_prompt}] + [
+                m.to_dict() if hasattr(m, 'to_dict') else m for m in messages
+            ],
             "max_tokens": max_tokens,
             "stream": stream,
         }
@@ -227,6 +229,34 @@ class OpenAIChat:
             provider=data.get("provider"),
             cost=data.get("cost"),
         )
+
+    async def embedding(self, text: str, model: str | None = None) -> np.ndarray:
+        """Generate embedding vector for text."""
+        config = get_config()
+        emb_config = config.embedding
+        model_name = model or emb_config.model
+
+        session = await self._ensure_session()
+        url = emb_config.endpoint.base_url.rstrip("/") + "/embeddings"
+        payload = {
+            "model": model_name,
+            "input": text,
+        }
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status != 200:
+                        text_err = await resp.text()
+                        raise RuntimeError(f"Embedding API error {resp.status}: {text_err}")
+                    data = await resp.json()
+                    embedding = data["data"][0]["embedding"]
+                    return np.array(embedding, dtype=np.float64)
+            except (TimeoutError, aiohttp.ClientError, RuntimeError) as e:
+                if attempt == self.max_retries:
+                    raise
+                logger.warning(f"Embedding request failed (attempt {attempt+1}): {e}, retrying...")
+                await asyncio.sleep(0.5 * (2 ** attempt))
 
 
 def normalize_image_bytes(image_data: bytes, mime_type: str) -> tuple[bytes, str]:

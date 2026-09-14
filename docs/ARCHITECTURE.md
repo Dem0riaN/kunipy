@@ -1,7 +1,7 @@
 # kunipy Architecture Guide
 
-**Version**: Phase 2 Complete  
-**Last Updated**: 2026-09-10
+**Version**: Hybrid Memory (SQLite + ChromaDB)  
+**Last Updated**: 2026-09-12
 
 ---
 
@@ -52,7 +52,9 @@ kunipy follows **Clean Architecture** principles with clear layer separation and
 │  (External Systems, Frameworks)         │
 │  - OpenAIChat (LLM)                     │
 │  - TelegramClient (TDLib)               │
-│  - MemoryStore (Database)               │
+│  - MemoryService (dual-write API)       │
+│    ├─ MemoryStore (ChromaDB vectors)    │
+│    └─ SQLite repositories (metadata)    │
 │  - DeliveryTracker (Telegram API)       │
 └─────────────────────────────────────────┘
 ```
@@ -115,12 +117,22 @@ src/
 │   ├── telegram_client.py  # TelegramClient (TDLib wrapper)
 │   ├── telegram_message_service.py
 │   ├── openai_chat.py      # OpenAIChat (LLM client)
-│   ├── memory/             # ✅ Memory infrastructure (ТЗ-001 complete)
-│   │   ├── vector_store.py    # ChromaDB wrapper
-│   │   ├── storage.py         # MemoryStore (IMemoryStore impl)
-│   │   ├── working_memory.py  # WorkingMemory (IWorkingMemory impl)
-│   │   ├── embedding_cache.py # TTL-based embedding cache
-│   │   └── stub_store.py      # Legacy stubs
+│   ├── embedding_adapter.py # OpenAI embedding adapter
+│   ├── memory/             # ✅ Memory infrastructure (ТЗ-002 hybrid: SQLite + ChromaDB)
+│   │   ├── memory_service.py           # High-level API (dual-write ChromaDB + SQLite)
+│   │   ├── memory_formation.py         # LLM-based automatic memory extraction
+│   │   ├── storage.py                  # MemoryStore (ChromaDB wrapper)
+│   │   ├── vector_store.py             # ChromaDB vector operations (HNSW ANN)
+│   │   ├── memory_repository.py        # SQLite metadata storage
+│   │   ├── memory_link_repository.py   # Entity relationships (SQLite)
+│   │   ├── user_preference_repository.py # User preferences (SQLite)
+│   │   ├── memory_tag_repository.py    # Memory tags (SQLite)
+│   │   ├── conversation_repository.py  # Message history (SQLite)
+│   │   ├── working_memory.py           # In-memory context + .md persistence
+│   │   ├── database.py                 # SQLite schema & connection
+│   │   ├── kuni_archive_reader.py      # Legacy C++ kuni format reader
+│   │   ├── kuni_migrator.py            # Migration: C++ kuni → kunipy
+│   │   └── memory_exporter.py          # Export to JSON/JSONL/Markdown
 │   ├── delivery/           # ✅ Delivery tracking (ТЗ-001 complete)
 │   │   ├── storage.py         # MessageDeliveryStorage (SQLite WAL)
 │   │   ├── tracker.py         # MessageDeliveryTracker
@@ -329,177 +341,148 @@ Memory retrieval respects scope boundaries.
 5. **Character/Global Memory**: General knowledge
 6. **Working Memory**: Current interaction state
 
+## Hybrid Memory Architecture (ТЗ-002)
+
+### Design: SQLite + ChromaDB
+
+Память kunipy построена на двух движках:
+
+- **ChromaDB** — векторный поиск (HNSW ANN). Семантический retrieval по косинусному расстоянию, <100ms на объёмах <100K записей.
+- **SQLite (WAL mode)** — метаданные, связи, теги, предпочтения, история переписок. Транзакции, реляционные запросы, `busy_timeout=5000`, `foreign_keys=ON`.
+
+PostgreSQL не используется: нагрузка userbot'а (1–5 workers, разные chat_id) полностью покрывается
+SQLite WAL, а весь PostgreSQL-код удалён как мёртвый.
+
 ### Memory Flow
 
 ```
 Message
    ↓
-Working Memory (current state)
+WorkingMemory (in-memory + working_memory.md)  — promises, plans, questions
    ↓
-Conversation History
+ConversationRepository (SQLite)                — полная история сообщений
    ↓
-Sleep Consolidation
+MemoryFormationService (LLM extraction)        — факты, события, мысли
    ↓
-Long-Term Memory (scope-specific)
+MemoryService.create_memory() — dual-write:
+   ├─→ MemoryStore (ChromaDB)   — embedding + searchable metadata
+   └─→ MemoryRepository (SQLite)— metadata, links, tags, provenance
    ↓
-RAG Retrieval (on next query)
+retrieve_context() на следующем запросе (RAG через ChromaDB HNSW)
 ```
 
-### Implementation Status (✅ COMPLETE)
+### MemoryService (`src/infrastructure/memory/memory_service.py`)
 
-**Phase 1**: Interfaces + domain models ✅  
-**Phase 2**: Full implementation ✅ **COMPLETE 2026-09-10**
-
-### Memory Infrastructure Components
-
-#### 1. VectorStore (`src/infrastructure/memory/vector_store.py`)
-
-ChromaDB wrapper для semantic search:
+Центральный high-level API. Инкапсулирует dual-write и многоуровневый retrieval:
 
 ```python
-class VectorStore:
-    """ChromaDB vector database wrapper."""
-    
-    async def add_memory(
+class MemoryService:
+    def __init__(
         self,
-        memory_id: str,
-        content: str,
-        embedding: list[float],
-        metadata: dict[str, Any],
-    ) -> None:
-        """Add memory with embedding to vector store."""
-        
-    async def search(
-        self,
-        query_embedding: list[float],
-        limit: int = 10,
-        filters: dict[str, Any] | None = None,
-    ) -> list[dict]:
-        """Semantic search by embedding similarity."""
+        memory_store: MemoryStore,                    # ChromaDB
+        memory_repo: MemoryRepository,                # SQLite metadata
+        memory_link_repo: MemoryLinkRepository,       # SQLite links (§35)
+        user_preference_repo: UserPreferenceRepository,  # SQLite prefs (§7.3)
+        memory_tag_repo: MemoryTagRepository,         # SQLite tags (§9)
+        conversation_repo: ConversationRepository,    # SQLite history (§20)
+        user_repo: UserRepository,
+        chat_repo: ChatRepository,
+        working_memory: WorkingMemory,                # in-memory + .md
+        embedding_provider: IEmbeddingProvider,
+        config: Config,
+    ): ...
+
+    async def create_memory(self, piece: MemoryPiece) -> str:
+        """Dual-write: ChromaDB (vectors) → SQLite (metadata)."""
+        await self.memory_store.create_memory(piece)
+        await self.memory_repo.create_memory(piece)
+        return piece.id
+
+    async def retrieve_context(self, user_id, chat_id, channel, query_text,
+                               max_pieces=10):
+        """Multi-level retrieval via ChromaDB HNSW + WorkingMemory."""
+        ...
 ```
 
-**Features:**
-- Persistent ChromaDB storage
-- Metadata filtering (user_id, chat_id, scope, kind)
-- Cosine similarity search
-- Automatic collection management
+**Retrieval strategy** (`retrieve_context`):
+1. Working memory context (promises/plans/questions)
+2. Query embedding через embedding provider
+3. Многоуровневый поиск через ChromaDB HNSW: CHAT (3) → USER (3, cross-channel) → PRIVATE (2, desktop owner) → GLOBAL (2)
+4. Дедупликация по id, ранжирование по similarity
+5. Топ-N в system prompt
 
-#### 2. MemoryStore (`src/infrastructure/memory/storage.py`)
+### SQLite Repository Layer
 
-IMemoryStore protocol implementation:
+Все репозитории работают на одном WAL-соединении (`database.py` — схема и подключение):
 
-```python
-class MemoryStore:
-    """Memory storage with vector search capabilities."""
-    
-    async def create_memory(self, memory: MemoryPiece) -> str:
-        """Store new memory with automatic embedding."""
-        
-    async def search_memory(
-        self,
-        query: str,
-        user_id: str | None = None,
-        chat_id: str | None = None,
-        scope: MemoryScope | None = None,
-        limit: int = 10,
-    ) -> list[MemoryPiece]:
-        """Semantic search across memories."""
-```
+| Репозиторий | Таблица | Назначение |
+|-------------|---------|-----------|
+| `MemoryRepository` | `memory_pieces`, `memory_embeddings` | Метаданные воспоминаний; embedding BLOB (backup/recovery) |
+| `ConversationRepository` | `conversation_messages` | История сообщений с provenance (§20) |
+| `MemoryLinkRepository` | `memory_links` | Связи между сущностями (§35) |
+| `UserPreferenceRepository` | `user_preferences` | Предпочтения пользователей (§7.3) |
+| `MemoryTagRepository` | `memory_tags` | Теги воспоминаний (§9) |
+| `UserRepository` / `ChatRepository` | `users`, `chats` | Профили и чаты |
 
-**Features:**
-- Automatic embedding generation
-- Scope-based filtering (DIALOGUE, PERSONAL, GLOBAL)
-- User/chat isolation
-- Confidence and importance scoring
+### ChromaDB Layer
 
-#### 3. WorkingMemory (`src/infrastructure/memory/working_memory.py`)
+- `VectorStore` (`vector_store.py`) — низкоуровневая обёртка коллекции ChromaDB: `add_memory`,
+  `update_memory` (merge metadata — ChromaDB заменяет dict целиком, поэтому читаем старые поля
+  и мержим), `search` (HNSW ANN), `count(where=...)`.
+- `MemoryStore` (`storage.py`) — реализация `IMemoryStore`: конвертация `MemoryPiece` ↔ документ,
+  списки (`source_message_ids`, `retrieval_cues`, `entities`, `metadata`) сериализуются в JSON
+  внутри ChromaDB metadata. Обновление usage-статистики — батчем, не по одному разу на результат.
 
-IWorkingMemory protocol implementation:
+### WorkingMemory (`working_memory.py`)
 
-```python
-class WorkingMemory:
-    """In-memory working context for current interactions."""
-    
-    def get_context(self, user_id: str, chat_id: str) -> WorkingContext:
-        """Get current working context."""
-        
-    def update_context(
-        self,
-        user_id: str,
-        chat_id: str,
-        message_text: str,
-    ) -> None:
-        """Update working context with new message."""
-```
+Единая реализация короткой памяти: dict в памяти + персист в `working_memory.md`
+(через `WorkingMemoryFileStore`). Человекочитаемый файл удобен для отладки.
+Дублирующий SQL-репозиторий `working_memory_repository.py` удалён.
 
-**Features:**
-- Per-user/chat context isolation
-- Recent messages tracking
-- Active promises and plans
-- Current mood state
-- In-memory only (fast)
+### Memory Formation (`memory_formation.py`)
 
-#### 4. EmbeddingCache (`src/infrastructure/memory/embedding_cache.py`)
+`MemoryFormationService` периодически (каждые N сообщений) вызывает LLM для извлечения
+фактов/событий/мыслей из диалога, создаёт `MemoryPiece` с scope и confidence, сохраняет
+через `MemoryService.create_memory()` (т.е. тоже dual-write).
 
-TTL-based cache для embedding API calls:
+### DI Container Integration
 
 ```python
-class EmbeddingCache:
-    """LRU cache with TTL for embeddings."""
-    
-    def get(self, text: str) -> list[float] | None:
-        """Get cached embedding if available and not expired."""
-        
-    def set(self, text: str, embedding: list[float]) -> None:
-        """Cache embedding with TTL."""
-```
+# src/di/container.py (memory_enabled)
+memory_db = MemoryDatabase(working_dir / config.memory_db_path)
+sqlite_conn = memory_db.connect()
+sqlite_conn.execute("PRAGMA journal_mode=WAL")
+sqlite_conn.execute("PRAGMA busy_timeout=5000")
+memory_db.initialize_schema()
 
-**Features:**
-- TTL-based expiration (default 1 hour)
-- LRU eviction policy
-- Automatic cleanup
-- Statistics tracking
+memory_store = MemoryStore(persist_directory=str(working_dir / "chroma"))
+working_memory = WorkingMemory(file_store=WorkingMemoryFileStore(working_dir / "working_memory.md"))
 
-### DI Container Integration (✅ COMPLETE)
-
-Memory components wired in `src/di/container.py`:
-
-```python
-async def create_dependencies(working_dir: Path, config: Config) -> Dependencies:
-    # Memory layer (ChromaDB-based implementation)
-    chroma_persist_dir = working_dir / "chroma"
-    chroma_persist_dir.mkdir(parents=True, exist_ok=True)
-
-    memory_store = MemoryStore(persist_directory=str(chroma_persist_dir))
-    working_memory = WorkingMemory()
-
-    return Dependencies(
-        memory_store=memory_store,
-        working_memory=working_memory,
-        # ... other dependencies
-    )
+memory_service = MemoryService(
+    memory_store=memory_store,
+    memory_repo=MemoryRepository(sqlite_conn, embedding_model=...),
+    memory_link_repo=..., user_preference_repo=..., memory_tag_repo=...,
+    conversation_repo=..., user_repo=..., chat_repo=...,
+    working_memory=working_memory,
+    embedding_provider=embedding_provider,
+    config=config,
+)
 ```
 
 ### Migration from C++ kuni
 
-Automatic migration tool: `migrate_diary.py`
+CLI-инструмент: **`migrate_kuni.py`** (в корне проекта). `KuniMigrator` пишет через
+`MemoryService`, поэтому миграция наполняет оба хранилища сразу:
 
 ```bash
-# Migrate C++ kuni diary to ChromaDB
-python migrate_diary.py --kuni-dir /path/to/cpp-kuni/diary
-
-# Dry-run (check without writing)
-python migrate_diary.py --kuni-dir /path/to/cpp-kuni/diary --dry-run
+python migrate_kuni.py --kuni-dir /path/to/cpp-kuni/diary --dry-run
+python migrate_kuni.py --kuni-dir /path/to/cpp-kuni/diary --scope global
 ```
 
-**Features:**
-- Automatic parsing of C++ kuni diary format
-- Metadata extraction (confidence, importance, user_id, chat_id)
-- Embedding regeneration
-- Progress tracking
-- Error handling
+Сохраняются embeddings (переиспользование из архива), confidence, usage_count; проставляется
+provenance `source_type="migration"`.
 
-See [docs/MIGRATION.md](MIGRATION.md) for details.
+Подробности — в [docs/MIGRATION.md](MIGRATION.md).
 
 ---
 
@@ -752,4 +735,4 @@ class SleepScheduler:
 
 ## Next Steps
 
-See [PHASE1_PROGRESS.md](D:\AI\PHASE1_PROGRESS.md) for current status and remaining tasks.
+Актуальное состояние — в [CURRENT_STATE.md](../CURRENT_STATE.md).

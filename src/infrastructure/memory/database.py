@@ -21,7 +21,11 @@ class MemoryDatabase:
         self._conn: sqlite3.Connection | None = None
 
     def connect(self) -> sqlite3.Connection:
-        """Get database connection (lazy initialization)."""
+        """Get database connection (lazy initialization).
+
+        Uses WAL mode + busy_timeout so concurrent workers (userbot with
+        multiple simultaneous chats) can read/write without lock errors.
+        """
         if self._conn is None:
             self._conn = sqlite3.connect(
                 str(self.db_path),
@@ -29,7 +33,12 @@ class MemoryDatabase:
                 isolation_level=None  # autocommit mode
             )
             self._conn.row_factory = sqlite3.Row
-            logger.info(f"Connected to memory database: {self.db_path}")
+            # WAL: concurrent readers + single writer without blocking
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            # Wait up to 5s if another writer holds the lock
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            logger.info(f"Connected to memory database: {self.db_path} (WAL mode)")
         return self._conn
 
     def close(self) -> None:
@@ -221,6 +230,76 @@ class MemoryDatabase:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_wm_items_due
             ON working_memory_items(due_at)
+        """)
+
+        # Table: memory_links (ТЗ-002 §35 — entity relationships between memories)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_memory_id TEXT NOT NULL,
+                to_memory_id TEXT NOT NULL,
+                link_type TEXT NOT NULL,
+                strength REAL DEFAULT 1.0,
+                scope TEXT DEFAULT 'global',
+                provenance TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (from_memory_id) REFERENCES memory_pieces(id) ON DELETE CASCADE,
+                FOREIGN KEY (to_memory_id) REFERENCES memory_pieces(id) ON DELETE CASCADE,
+                UNIQUE(from_memory_id, to_memory_id, link_type)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_links_from
+            ON memory_links(from_memory_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_links_to
+            ON memory_links(to_memory_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_links_type
+            ON memory_links(link_type)
+        """)
+
+        # Table: user_preferences (ТЗ-002 §7.3)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                preference_key TEXT NOT NULL,
+                preference_value TEXT NOT NULL,
+                confidence REAL DEFAULT 0.5,
+                source TEXT DEFAULT 'inferred',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                UNIQUE(user_id, preference_key)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_prefs_user
+            ON user_preferences(user_id)
+        """)
+
+        # Table: memory_tags (ТЗ-002 §9)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (memory_id) REFERENCES memory_pieces(id) ON DELETE CASCADE,
+                UNIQUE(memory_id, tag)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_tags_memory
+            ON memory_tags(memory_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_tags_tag
+            ON memory_tags(tag)
         """)
 
         conn.commit()

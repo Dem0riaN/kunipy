@@ -20,11 +20,18 @@ wheels/
 .installed.cfg
 *.egg
 
+# Кэш инструментов разработки
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
 # Virtual environments
 venv/
 env/
 ENV/
-.venv
+.venv/
 
 # IDE
 .vscode/
@@ -33,20 +40,28 @@ ENV/
 *.swo
 *~
 .DS_Store
+Thumbs.db
 
-# Project-specific
-data/*
-!data/.gitkeep
-config/*
-!config/.gitkeep
+# === Содержимое diary/ (директория сохраняется, файлы игнорируются) ===
+diary/*
+!diary/.gitkeep
+
+# === Конфиденциальный конфиг ===
+config.toml
+
+# === Рабочие данные ===
+data/
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.log
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
+# === TDLib (бинарные файлы) ===
+tdlib_*/
+*.dll
+*.so.*
 
 # Misc
 .env

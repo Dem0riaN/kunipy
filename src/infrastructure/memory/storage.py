@@ -1,5 +1,6 @@
 """MemoryStore implementation with ChromaDB backend (ТЗ-002 punkt 38)."""
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -92,6 +93,8 @@ class MemoryStore(IMemoryStore):
         """Search memory by embedding similarity.
 
         Implements semantic search with scope filtering.
+        Usage stats are updated in-memory immediately and batch-flushed
+        to ChromaDB as a fire-and-forget task (avoids N+1 writes).
 
         Args:
             query_embedding: Query vector
@@ -104,14 +107,21 @@ class MemoryStore(IMemoryStore):
         Returns:
             Ranked list of memory pieces
         """
-        where: dict[str, str | float] = {"scope": scope.value}
+        # ChromaDB requires where to have exactly one top-level key.
+        # When multiple conditions exist, wrap them in $and.
+        conditions: list[dict] = [{"scope": scope.value}]
 
         if user_id:
-            where["user_id"] = user_id
+            conditions.append({"user_id": user_id})
         if chat_id:
-            where["chat_id"] = chat_id
+            conditions.append({"chat_id": chat_id})
         if min_confidence > -1.0:
-            where["confidence"] = {"$gte": min_confidence}
+            conditions.append({"confidence": {"$gte": min_confidence}})
+
+        where: dict = (
+            conditions[0] if len(conditions) == 1
+            else {"$and": conditions}
+        )
 
         memories = await self._store.search(
             query_embedding=query_embedding,
@@ -119,12 +129,21 @@ class MemoryStore(IMemoryStore):
             where=where
         )
 
-        # Update usage stats
+        # Update usage stats in-memory (immediate)
         now = datetime.now(UTC)
+        ids = []
+        usage_counts = []
         for memory in memories:
             memory.last_used = now
             memory.usage_count += 1
-            await self._store.update_memory(memory)
+            ids.append(memory.id)
+            usage_counts.append(memory.usage_count)
+
+        # Batch-update ChromaDB as fire-and-forget (avoids N+1 writes)
+        if ids:
+            asyncio.create_task(
+                self._store.batch_update_usage(ids, now, usage_counts)
+            )
 
         return memories
 

@@ -56,7 +56,6 @@ class MediaExtractor(ABC):
         Returns:
             True if this extractor can process the media
         """
-        pass
 
     @abstractmethod
     async def extract(
@@ -77,4 +76,3 @@ class MediaExtractor(ABC):
         Returns:
             ExtractionResult with content or error
         """
-        pass

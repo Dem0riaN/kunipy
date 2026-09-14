@@ -128,11 +128,21 @@ def ensure_character_files(config: Config, base_dir: str = ".") -> tuple[Path, P
 
 def load_character_prompt(config: Config, base_dir: str = ".") -> str:
     """Load (creating if necessary) the character files and combine them
-    into the text block used as the LLM's system prompt persona section."""
+    into the text block used as the LLM's system prompt persona section.
+
+    Placeholders (${CHARACTER_NAME} etc.) are substituted with config values
+    so user-edited prompt files work correctly.
+    """
+    from .prompt_loader import _substitute_prompt_vars
+
     base_path, appearance_path = ensure_character_files(config, base_dir)
 
     base_text = _strip_front_matter(base_path.read_text(encoding="utf-8"))
     appearance_text = _strip_front_matter(appearance_path.read_text(encoding="utf-8"))
+
+    # Substitute placeholders in user-edited character files
+    base_text = _substitute_prompt_vars(base_text, config)
+    appearance_text = _substitute_prompt_vars(appearance_text, config)
 
     return (
         f"{base_text}\n\n"
@@ -155,7 +165,7 @@ def build_system_prompt(
     - character_base.md + character_appearance.md - character persona
     - working memory and diary context
     """
-    from prompt_loader import build_full_system_prompt
+    from .prompt_loader import build_full_system_prompt
 
     persona = load_character_prompt(config, base_dir)
 
@@ -164,4 +174,5 @@ def build_system_prompt(
         working_memory=working_memory_text,
         diary_context=diary_context,
         prompts_dir=prompts_dir,
+        config=config,
     )

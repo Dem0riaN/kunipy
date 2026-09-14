@@ -150,23 +150,17 @@ class TelegramClient:
         last_error: Exception | None = None
         for attempt in range(1, max_retries + 1):
             logger.info(f"Connecting to Telegram (attempt {attempt}/{max_retries})...")
-            self._client = Client(settings=settings)
-            self._client.add_event_handler(self._handle_update, API.Types.ANY)
-            self._client.add_event_handler(self._log_authorization_state, API.Types.UPDATE_AUTHORIZATION_STATE)
-
             try:
+                self._client = Client(settings=settings)
+                self._client.add_event_handler(self._handle_update, API.Types.ANY)
+                self._client.add_event_handler(self._log_authorization_state, API.Types.UPDATE_AUTHORIZATION_STATE)
+
                 await asyncio.wait_for(self._client.start(), timeout=connect_timeout)
                 self._my_id = await self._client.get_my_id()
                 self._is_ready = True
                 logger.info(f"Telegram client ready, my_id={self._my_id}")
                 return
-            except TimeoutError:
-                last_error = TimeoutError(
-                    f"Timed out after {connect_timeout}s waiting for Telegram authorization to complete "
-                    f"(stuck at state: {self._last_authorization_state or 'unknown, no update received at all'})"
-                )
-                logger.error(str(last_error))
-            except (ValueError, KeyError, TypeError, RuntimeError, OSError) as e:
+            except (TimeoutError, ValueError, KeyError, TypeError, RuntimeError, OSError) as e:
                 last_error = e
                 logger.error(f"Failed to start Telegram client (attempt {attempt}/{max_retries}): {e}")
 

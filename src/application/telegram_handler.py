@@ -115,7 +115,7 @@ class TelegramEventHandler:
                         "is_voice": bool(msg.media and msg.media.get("type") == "voice"),
                     }
                 )
-                logger.debug(f"Stored user message to memory system")
+                logger.debug("Stored user message to memory system")
             except Exception as e:
                 logger.warning(f"Failed to store message to memory: {e}")
 

@@ -1,4 +1,9 @@
-"""Memory service - high-level API for memory system (ТЗ-002)."""
+"""Memory service - high-level API for memory system (ТЗ-002).
+
+Hybrid architecture: ChromaDB for vector search (HNSW ANN) + SQLite for
+metadata, links, preferences, and tags. Writes go to both stores; reads
+use ChromaDB for semantic search and SQLite for structured queries.
+"""
 
 import logging
 import uuid
@@ -7,20 +12,22 @@ from datetime import UTC, datetime
 from ...config import Config
 from ...domain.memory_models import (
     ConversationMessage,
-    RetrievalContext,
-    WorkingMemoryItem,
 )
 from ...interfaces.llm import IEmbeddingProvider
 from ...interfaces.memory import (
+    IMemoryStore,
     MemoryKind,
     MemoryPiece,
     MemoryScope,
     WorkingMemoryContext,
 )
 from .conversation_repository import ConversationRepository
+from .memory_link_repository import MemoryLinkRepository
 from .memory_repository import MemoryRepository
+from .memory_tag_repository import MemoryTagRepository
 from .user_chat_repository import ChatRepository, UserRepository
-from .working_memory_repository import WorkingMemoryRepository
+from .user_preference_repository import UserPreferenceRepository
+from .working_memory import WorkingMemory
 
 logger = logging.getLogger(__name__)
 
@@ -29,40 +36,66 @@ class MemoryService:
     """High-level memory service (ТЗ-002 integration).
 
     Provides unified API for:
-    - Conversation history storage
-    - Long-term memory creation and retrieval
-    - Working memory management
-    - Context resolution
+    - Conversation history storage (SQLite)
+    - Long-term memory creation and retrieval (ChromaDB + SQLite)
+    - Working memory management (in-memory + .md file)
+    - Context resolution with multi-level scope retrieval
     """
 
     def __init__(
         self,
+        memory_store: IMemoryStore,
         conversation_repo: ConversationRepository,
         memory_repo: MemoryRepository,
-        working_memory_repo: WorkingMemoryRepository,
+        memory_link_repo: MemoryLinkRepository,
+        user_preference_repo: UserPreferenceRepository,
+        memory_tag_repo: MemoryTagRepository,
         user_repo: UserRepository,
         chat_repo: ChatRepository,
+        working_memory: WorkingMemory,
         embedding_provider: IEmbeddingProvider,
         config: Config,
     ):
         """Initialize memory service.
 
         Args:
-            conversation_repo: Conversation history repository
-            memory_repo: Long-term memory repository
-            working_memory_repo: Working memory repository
+            memory_store: ChromaDB-backed vector store (HNSW ANN search)
+            conversation_repo: Conversation history repository (SQLite)
+            memory_repo: Long-term memory metadata repository (SQLite)
+            memory_link_repo: Memory-to-memory links (SQLite)
+            user_preference_repo: Per-user preferences (SQLite)
+            memory_tag_repo: Memory tags (SQLite)
             user_repo: User repository
             chat_repo: Chat repository
+            working_memory: In-memory working memory (.md persistence)
             embedding_provider: Embedding provider for vector generation
             config: Application configuration
         """
+        self.memory_store = memory_store
         self.conversation_repo = conversation_repo
         self.memory_repo = memory_repo
-        self.working_memory_repo = working_memory_repo
+        self.memory_link_repo = memory_link_repo
+        self.user_preference_repo = user_preference_repo
+        self.memory_tag_repo = memory_tag_repo
         self.user_repo = user_repo
         self.chat_repo = chat_repo
+        self.working_memory = working_memory
         self.embedding_provider = embedding_provider
         self.config = config
+
+    async def embed_text(self, text: str) -> list[float]:
+        """Generate embedding for text.
+
+        Convenience wrapper around embedding_provider.
+
+        Args:
+            text: Input text
+
+        Returns:
+            Embedding vector as list of floats
+        """
+        result = await self.embedding_provider.embedding(text)
+        return result.tolist() if hasattr(result, 'tolist') else list(result)
 
     async def store_message(
         self,
@@ -77,7 +110,8 @@ class MemoryService:
     ) -> str:
         """Store message in conversation history.
 
-        Also updates user/chat last_seen_at timestamps.
+        Also updates user/chat last_seen_at timestamps and working memory
+        last_interaction time.
 
         Args:
             user_id: User ID
@@ -113,30 +147,50 @@ class MemoryService:
         # Ensure user exists
         await self.user_repo.get_or_create_user(
             user_id=user_id,
-            display_name=f"User {user_id}"  # Default name, should be updated
+            display_name=f"User {user_id}"
         )
 
         # Ensure chat exists
         chat_type = metadata.get("chat_type", "private")
-
         await self.chat_repo.get_or_create_chat(
             chat_id=chat_id,
             chat_type=chat_type,
             title=metadata.get("chat_title"),
         )
 
-        # Store message
+        # Store message in SQLite
         await self.conversation_repo.store_message(msg)
 
-        # Update working memory last_interaction
-        await self.working_memory_repo.update_context(
+        # Update working memory last_interaction via in-memory WorkingMemory
+        await self.working_memory.update_context(
             user_id=user_id,
             chat_id=chat_id,
-            channel=channel,
-            updates={},  # Just update timestamp
+            updates={"channel": channel},
         )
 
         return message_id
+
+    async def create_memory(self, piece: MemoryPiece) -> str:
+        """Create memory piece in both ChromaDB (vectors) and SQLite (metadata).
+
+        This is the dual-write that enables hybrid search:
+        - ChromaDB: HNSW ANN for semantic similarity
+        - SQLite: structured queries, full-text search, links, tags
+
+        Args:
+            piece: Memory piece to store (must have embedding set)
+
+        Returns:
+            Memory ID
+        """
+        # 1. ChromaDB first (vector search)
+        await self.memory_store.create_memory(piece)
+
+        # 2. SQLite (metadata + links + tags)
+        await self.memory_repo.create_memory(piece)
+
+        logger.info(f"Created memory {piece.id}: {piece.kind.value}/{piece.scope.value}")
+        return piece.id
 
     async def create_memory_from_text(
         self,
@@ -150,15 +204,18 @@ class MemoryService:
         importance: float = 0.5,
         source_message_ids: list[str] | None = None,
     ) -> str:
-        """Create memory piece from text.
+        """Create memory piece from text (generates embedding automatically).
+
+        Kept for tool/CLI compatibility — runtime memory formation uses
+        create_memory() directly with pre-computed embeddings.
 
         Args:
             content: Memory content
-            kind: Memory kind (entity_description, thought, event, fact, other)
-            scope: Memory scope (private, user, chat, shared, global)
+            kind: Memory kind
+            scope: Memory scope
             user_id: User ID (required for USER scope)
             chat_id: Chat ID (required for CHAT scope)
-            channel: Channel (telegram, desktop, voice)
+            channel: Channel
             confidence: Confidence level (-1 to 1)
             importance: Importance level (0 to 1)
             source_message_ids: Source message IDs
@@ -166,11 +223,8 @@ class MemoryService:
         Returns:
             Memory ID
         """
-        # Generate embedding
-        embedding_result = await self.embedding_provider.embedding(content)
-        embedding = embedding_result.tolist() if hasattr(embedding_result, 'tolist') else list(embedding_result)
+        embedding = await self.embed_text(content)
 
-        # Create memory piece
         piece = MemoryPiece(
             id=str(uuid.uuid4()),
             kind=kind,
@@ -190,9 +244,7 @@ class MemoryService:
             usage_count=0,
         )
 
-        memory_id = await self.memory_repo.create_memory(piece)
-        logger.info(f"Created memory {memory_id}: {kind.value}/{scope.value}")
-        return memory_id
+        return await self.create_memory(piece)
 
     async def retrieve_context(
         self,
@@ -204,6 +256,12 @@ class MemoryService:
     ) -> tuple[WorkingMemoryContext, list[MemoryPiece]]:
         """Retrieve full context for LLM prompt.
 
+        Uses ChromaDB HNSW for multi-level scope retrieval:
+        1. CHAT scope — chat-specific memories
+        2. USER scope — user-specific + cross-channel linked users
+        3. PRIVATE scope — desktop owner only
+        4. GLOBAL scope — general knowledge
+
         Args:
             user_id: User ID
             chat_id: Chat ID
@@ -214,34 +272,62 @@ class MemoryService:
         Returns:
             Tuple of (working_memory_context, long_term_memories)
         """
-        # Get working memory
-        working_ctx = await self.working_memory_repo.get_context(
-            user_id, chat_id, channel
-        )
+        # 1. Working memory from in-memory/file
+        working_ctx = await self.working_memory.get_context(user_id, chat_id)
 
-        # Generate query embedding
-        query_embedding_result = await self.embedding_provider.embedding(query_text)
-        query_embedding = query_embedding_result.tolist() if hasattr(query_embedding_result, 'tolist') else list(query_embedding_result)
+        # 2. Generate query embedding
+        query_embedding = await self.embed_text(query_text)
 
-        # Resolve access scopes
-        accessible_scopes = await self._resolve_accessible_scopes(
-            user_id, channel
-        )
+        # 3. Resolve access scopes
+        accessible_scopes = await self._resolve_accessible_scopes(user_id, channel)
 
-        # Multi-level retrieval
-        memories = await self._retrieve_memories(
-            query_embedding=query_embedding,
-            user_id=user_id,
-            chat_id=chat_id,
-            accessible_scopes=accessible_scopes,
-            max_pieces=max_pieces,
-        )
+        # 4. Resolve linked user IDs for cross-channel (ТЗ-002 §7.4)
+        linked_user_ids = self._resolve_linked_user_ids(user_id, channel)
 
-        # Update usage statistics
-        for memory in memories:
-            memory.last_used = datetime.now(UTC)
-            memory.usage_count += 1
-            await self.memory_repo.update_memory(memory)
+        # 5. Multi-level retrieval through ChromaDB HNSW
+        all_memories: list[MemoryPiece] = []
+
+        if MemoryScope.CHAT in accessible_scopes:
+            chat_results = await self.memory_store.search_memory(
+                query_embedding=query_embedding,
+                scope=MemoryScope.CHAT,
+                chat_id=chat_id,
+                limit=3,
+                min_confidence=self.config.memory_min_similarity,
+            )
+            all_memories.extend(chat_results)
+
+        if MemoryScope.USER in accessible_scopes:
+            for linked_uid in linked_user_ids:
+                user_results = await self.memory_store.search_memory(
+                    query_embedding=query_embedding,
+                    scope=MemoryScope.USER,
+                    user_id=linked_uid,
+                    limit=3,
+                    min_confidence=self.config.memory_min_similarity,
+                )
+                all_memories.extend(user_results)
+
+        if MemoryScope.PRIVATE in accessible_scopes:
+            private_results = await self.memory_store.search_memory(
+                query_embedding=query_embedding,
+                scope=MemoryScope.PRIVATE,
+                limit=2,
+                min_confidence=self.config.memory_min_similarity,
+            )
+            all_memories.extend(private_results)
+
+        if MemoryScope.GLOBAL in accessible_scopes:
+            global_results = await self.memory_store.search_memory(
+                query_embedding=query_embedding,
+                scope=MemoryScope.GLOBAL,
+                limit=2,
+                min_confidence=self.config.memory_min_similarity,
+            )
+            all_memories.extend(global_results)
+
+        # 6. Deduplicate and rank
+        memories = self._deduplicate_and_rank(all_memories, max_pieces)
 
         return working_ctx, memories
 
@@ -259,14 +345,8 @@ class MemoryService:
         Returns:
             Promise item ID
         """
-        item = WorkingMemoryItem(
-            id=str(uuid.uuid4()),
-            item_type="promise",
-            content=promise,
-        )
-        return await self.working_memory_repo.add_item(
-            user_id, chat_id, channel, item
-        )
+        await self.working_memory.add_promise(user_id, chat_id, promise)
+        return f"promise-{uuid.uuid4()}"
 
     async def add_plan(
         self,
@@ -288,15 +368,13 @@ class MemoryService:
         Returns:
             Plan item ID
         """
-        item = WorkingMemoryItem(
-            id=str(uuid.uuid4()),
-            item_type="plan",
-            content=plan,
-            due_at=due_at,
-        )
-        return await self.working_memory_repo.add_item(
-            user_id, chat_id, channel, item
-        )
+        plan_dict = {
+            "description": plan,
+            "due_at": due_at.isoformat() if due_at else None,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        await self.working_memory.add_plan(user_id, chat_id, plan_dict)
+        return f"plan-{uuid.uuid4()}"
 
     async def add_question(
         self, user_id: str, chat_id: str, channel: str, question: str
@@ -312,114 +390,47 @@ class MemoryService:
         Returns:
             Question item ID
         """
-        item = WorkingMemoryItem(
-            id=str(uuid.uuid4()),
-            item_type="question",
-            content=question,
-        )
-        return await self.working_memory_repo.add_item(
-            user_id, chat_id, channel, item
-        )
+        context = await self.working_memory.get_context(user_id, chat_id)
+        context.pending_questions.append(question)
+        return f"question-{uuid.uuid4()}"
 
     async def _resolve_accessible_scopes(
         self, user_id: str, channel: str
     ) -> list[MemoryScope]:
-        """Resolve accessible memory scopes for user.
+        """Resolve accessible memory scopes for user."""
+        scopes = [MemoryScope.GLOBAL, MemoryScope.CHAT, MemoryScope.USER]
 
-        Args:
-            user_id: User ID
-            channel: Channel
-
-        Returns:
-            List of accessible scopes
-        """
-        scopes = [MemoryScope.GLOBAL]  # Always accessible
-
-        # Add CHAT and USER scopes
-        scopes.append(MemoryScope.CHAT)
-        scopes.append(MemoryScope.USER)
-
-        # Check if desktop owner (access to PRIVATE scope)
+        # Desktop owner gets PRIVATE scope
         if self.config.desktop_owner_telegram_id:
             if user_id == self.config.desktop_owner_telegram_id:
                 scopes.append(MemoryScope.PRIVATE)
 
         return scopes
 
-    async def _retrieve_memories(
-        self,
-        query_embedding: list[float],
-        user_id: str,
-        chat_id: str,
-        accessible_scopes: list[MemoryScope],
-        max_pieces: int,
+    def _resolve_linked_user_ids(self, user_id: str, channel: str) -> list[str]:
+        """Resolve linked user IDs for cross-channel context (ТЗ-002 §5, §6.4)."""
+        linked_ids = [user_id]
+
+        if self.config.desktop_owner_telegram_id:
+            if channel == "desktop" and user_id.startswith("desktop:"):
+                linked_ids.append(self.config.desktop_owner_telegram_id)
+            elif user_id == self.config.desktop_owner_telegram_id:
+                linked_ids.append(f"desktop:{self.config.desktop_owner_telegram_id}")
+
+        return linked_ids
+
+    @staticmethod
+    def _deduplicate_and_rank(
+        memories: list[MemoryPiece], max_pieces: int
     ) -> list[MemoryPiece]:
-        """Multi-level memory retrieval.
-
-        Args:
-            query_embedding: Query embedding vector
-            user_id: User ID
-            chat_id: Chat ID
-            accessible_scopes: Accessible scopes
-            max_pieces: Maximum pieces to return
-
-        Returns:
-            Ranked list of memory pieces
-        """
-        all_results = []
-
-        # 1. Chat-specific memories
-        if MemoryScope.CHAT in accessible_scopes:
-            chat_results = await self.memory_repo.search_by_embedding(
-                query_embedding=query_embedding,
-                scope=MemoryScope.CHAT,
-                chat_id=chat_id,
-                limit=3,
-                min_confidence=self.config.memory_min_similarity,
-            )
-            all_results.extend(chat_results)
-
-        # 2. User-specific memories
-        if MemoryScope.USER in accessible_scopes:
-            user_results = await self.memory_repo.search_by_embedding(
-                query_embedding=query_embedding,
-                scope=MemoryScope.USER,
-                user_id=user_id,
-                limit=3,
-                min_confidence=self.config.memory_min_similarity,
-            )
-            all_results.extend(user_results)
-
-        # 3. Private memories (for desktop owner)
-        if MemoryScope.PRIVATE in accessible_scopes:
-            private_results = await self.memory_repo.search_by_embedding(
-                query_embedding=query_embedding,
-                scope=MemoryScope.PRIVATE,
-                limit=2,
-                min_confidence=self.config.memory_min_similarity,
-            )
-            all_results.extend(private_results)
-
-        # 4. Global memories
-        if MemoryScope.GLOBAL in accessible_scopes:
-            global_results = await self.memory_repo.search_by_embedding(
-                query_embedding=query_embedding,
-                scope=MemoryScope.GLOBAL,
-                limit=2,
-                min_confidence=self.config.memory_min_similarity,
-            )
-            all_results.extend(global_results)
-
-        # Deduplicate by ID
-        seen_ids = set()
-        deduplicated = []
-        for piece, score in all_results:
+        """Deduplicate by ID and rank by importance * confidence."""
+        seen_ids: set[str] = set()
+        unique: list[MemoryPiece] = []
+        for piece in memories:
             if piece.id not in seen_ids:
                 seen_ids.add(piece.id)
-                deduplicated.append((piece, score))
+                unique.append(piece)
 
-        # Sort by final score
-        sorted_results = sorted(deduplicated, key=lambda x: x[1], reverse=True)
-
-        # Return top pieces
-        return [piece for piece, score in sorted_results[:max_pieces]]
+        # Sort by importance * confidence (higher = better)
+        unique.sort(key=lambda p: p.importance * max(p.confidence, 0), reverse=True)
+        return unique[:max_pieces]

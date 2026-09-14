@@ -46,6 +46,8 @@ class Worker:
         config: Config,
         working_memory_context: str | None = None,
         memory_service=None,  # ТЗ-002: Memory service injection
+        diary_dump_service=None,  # Phase 3: Conversation→diary pipeline
+        diary_context_injector=None,  # Phase 4: Auto-RAG injection
     ):
         """Initialize worker with dependencies.
 
@@ -58,6 +60,8 @@ class Worker:
             config: Application configuration
             working_memory_context: Pre-loaded working memory context (optional)
             memory_service: Memory service for ТЗ-002 (optional)
+            diary_dump_service: Conversation→diary dump service (optional, Phase 3)
+            diary_context_injector: Auto-RAG diary injector (optional, Phase 4)
         """
         self.name = name
         self.openai = openai
@@ -67,6 +71,8 @@ class Worker:
         self.config = config
         self._working_memory_context = working_memory_context or ""
         self.memory_service = memory_service  # ТЗ-002
+        self._diary_dump_service = diary_dump_service  # Phase 3
+        self._diary_context_injector = diary_context_injector  # Phase 4
 
         self._running = False
         self._sleeping = False
@@ -123,15 +129,15 @@ class Worker:
             logger.exception(f"Worker {self.name} failed to generate response")
             return
 
-        # Fallback: if LLM produced text but didn't call send_message tool
-        if final_text and self.telegram:
-            try:
-                from .tools import _simulate_typing
-                await _simulate_typing(self.telegram, chat_id, final_text)
-                await self.telegram.send_message(chat_id, final_text)
-                logger.info(f"Worker {self.name} sent fallback response")
-            except (ValueError, KeyError, TypeError, RuntimeError) as e:
-                logger.error(f"Failed to send fallback message: {e}")
+        # Log if LLM produced text but didn't call send_message tool
+        # According to system.md contract: internal thoughts (thought/emotion/intention)
+        # must NEVER be sent to real people via Telegram. Only #send_telegram_message
+        # tool calls should reach users.
+        if final_text:
+            logger.info(
+                f"Worker {self.name} generated text without tool calls, "
+                f"not sending to Telegram (contract: thoughts stay internal)"
+            )
 
     async def _generate_response(
         self, notification: Notification, chat_id: int
@@ -214,8 +220,19 @@ class Worker:
                 tool_schemas = tools.to_json_schemas()
 
             # Add messages_epilogue.md to messages before sending to LLM
-            from prompt_loader import build_messages_with_epilogue
-            messages_with_epilogue = build_messages_with_epilogue(messages)
+            from .prompt_loader import build_messages_with_epilogue
+            messages_with_epilogue = build_messages_with_epilogue(
+                messages, config=self.config
+            )
+
+            # Phase 4: inject diary full-text into messages
+            if self._diary_context_injector and self.config.diary_auto_rag_enabled:
+                try:
+                    messages_with_epilogue = await self._diary_context_injector.inject_into_messages(
+                        messages_with_epilogue, notification.message
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to inject diary into messages: {e}")
 
             response = await self.openai.chat(
                 messages=messages_with_epilogue,
@@ -262,7 +279,7 @@ class Worker:
                         content=content,
                         metadata={"has_tool_calls": bool(tool_calls)}
                     )
-                    logger.debug(f"Stored assistant message to memory system")
+                    logger.debug("Stored assistant message to memory system")
                 except Exception as e:
                     logger.warning(f"Failed to store assistant message to memory: {e}")
 
@@ -270,6 +287,7 @@ class Worker:
             if tool_calls:
                 ever_called_tool = True
                 tool_results = []
+                should_pause = False
 
                 for tc in tool_calls:
                     tool_id = tc.get("id")
@@ -291,11 +309,20 @@ class Worker:
                         tool_call_id=tool_id
                     ))
 
+                    # Detect wait/pause — signal that the LLM is done for this turn
+                    # (mirrors C++ kuni Worker.cpp pauseFlag logic)
+                    if name in tools_module._TERMINAL_TOOL_NAMES:
+                        should_pause = True
+
                 self._log_tool_results(chat_id, tool_calls, tool_results)
 
                 # Add tool results to history
                 history.extend(tool_results)
                 messages.extend(tool_results)
+
+                if should_pause:
+                    logger.debug(f"[chat_{chat_id}] wait/pause called — stopping turn")
+                    break
 
                 continue  # Next iteration
 
@@ -305,9 +332,16 @@ class Worker:
         # Finish TUI output
         tui_printer.finish()
 
-        # Trim history if too long
+        # Trim history if too long (Phase 3: dump to diary before trimming).
+        # maybe_dump() returns the (possibly trimmed) list; assign back into
+        # the SAME list object since `history` is self.temporary_context[chat_id].
         if len(history) > 20:
-            history[:] = history[-15:]
+            if self._diary_dump_service:
+                trimmed = await self._diary_dump_service.maybe_dump(history, chat_id)
+                history[:] = trimmed
+                messages = list(history)
+            else:
+                history[:] = history[-15:]
 
         # Return leftover text if no tools were ever called
         if not ever_called_tool and messages and messages[-1].role == "assistant":
@@ -316,11 +350,20 @@ class Worker:
         return None
 
     async def _build_system_prompt(self, notification: Notification) -> str:
-        """Build system prompt with working memory context."""
+        """Build system prompt with working memory and diary auto-RAG context."""
+        diary_context = ""
+        if self._diary_context_injector and self.config.diary_auto_rag_enabled:
+            try:
+                diary_context = await self._diary_context_injector.inject_into_system_prompt(
+                    notification.message
+                )
+            except Exception as e:
+                logger.error(f"Failed to inject diary context into system prompt: {e}")
+
         base_prompt = build_system_prompt(
             config=self.config,
             working_memory_text=self._working_memory_context,
-            diary_context=""
+            diary_context=diary_context,
         )
 
         return base_prompt

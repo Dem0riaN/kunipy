@@ -120,7 +120,7 @@ class SleepScheduler:
             await self._deps.diary.sleep_consolidation()
             logger.info("Sleep consolidation completed successfully")
         except (ValueError, KeyError, TypeError, RuntimeError) as e:
-            logger.error(f"Sleep consolidation failed: {e}")
+            logger.exception(f"Sleep consolidation failed: {e}")
 
     async def trigger_manual_consolidation(self) -> None:
         """Manually trigger consolidation (for testing/debugging)."""

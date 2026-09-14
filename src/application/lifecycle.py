@@ -101,6 +101,14 @@ class ApplicationLifecycle:
         if self._deps.telegram_client:
             await self._deps.telegram_client.stop()
 
+        # Close HTTP sessions (aiohttp) to avoid "Unclosed client session" warnings
+        for client in (self._deps.openai_chat, self._deps.embedding_provider):
+            if client is not None and hasattr(client, "close"):
+                try:
+                    await client.close()
+                except Exception:
+                    logger.debug("HTTP client close failed (ignored)")
+
         logger.info("Application stopped")
 
     def is_running(self) -> bool:
@@ -117,21 +125,27 @@ class ApplicationLifecycle:
         self._tasks.append(task)
         logger.debug(f"Registered background task: {name}")
 
-    async def wait_for_shutdown(self) -> None:
-        """Block until application is shut down.
+    async def wait_for_shutdown(self, shutdown_event: asyncio.Event | None = None) -> None:
+        """Block until shutdown signal is received.
 
-        Waits for all background tasks to complete or KeyboardInterrupt.
+        This method ONLY waits for the shutdown signal. All cleanup is handled
+        by App.stop() (called from App.start()'s finally block after this returns).
+
+        Returns when any of:
+        - shutdown_event is set (e.g. console "shutdown" command from App)
+        - KeyboardInterrupt (Ctrl+C)
+
+        Args:
+            shutdown_event: Optional external shutdown signal. If None, waits
+                indefinitely for Ctrl+C (original behavior).
         """
         logger.info(f"Waiting for shutdown, {len(self._tasks)} background tasks registered")
+
         try:
-            if self._tasks:
-                await asyncio.gather(*self._tasks, return_exceptions=True)
+            if shutdown_event:
+                await shutdown_event.wait()
             else:
-                # No background tasks - wait indefinitely for Ctrl+C
+                # No shutdown signal provided — wait forever (Ctrl+C only)
                 await asyncio.Event().wait()
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt")
-        except Exception:
-            logger.exception("Unhandled error")
-        finally:
-            await self.stop()

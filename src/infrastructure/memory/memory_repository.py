@@ -15,16 +15,19 @@ logger = logging.getLogger(__name__)
 class MemoryRepository:
     """Repository for long-term memory pieces (ТЗ-002 punkt 9).
 
-    Handles CRUD operations and vector similarity search.
+    Handles CRUD operations and metadata storage.
+    Vector similarity search is delegated to ChromaDB via MemoryStore.
     """
 
-    def __init__(self, db_connection: sqlite3.Connection):
+    def __init__(self, db_connection: sqlite3.Connection, embedding_model: str = "default"):
         """Initialize repository.
 
         Args:
             db_connection: SQLite database connection
+            embedding_model: Name of the embedding model used for vectors
         """
         self.conn = db_connection
+        self._embedding_model = embedding_model
 
     async def create_memory(self, piece: MemoryPiece) -> str:
         """Create new memory piece.
@@ -69,8 +72,8 @@ class MemoryRepository:
             ),
         )
 
-        # Store embedding separately
-        if piece.embedding:
+        # Store embedding separately (with required embedding_model and dimension columns)
+        if piece.embedding is not None and len(piece.embedding) > 0:
             embedding_array = np.array(piece.embedding, dtype=np.float32)
             cursor.execute(
                 """
@@ -81,7 +84,7 @@ class MemoryRepository:
                 (
                     piece.id,
                     embedding_array.tobytes(),
-                    "text-embedding-3-small",  # TODO: get from config
+                    self._embedding_model,
                     len(piece.embedding),
                     datetime.now(UTC).isoformat(),
                 ),
@@ -111,14 +114,13 @@ class MemoryRepository:
 
         # Get embedding
         cursor.execute(
-            "SELECT embedding, dimension FROM memory_embeddings WHERE memory_id = ?",
+            "SELECT embedding FROM memory_embeddings WHERE memory_id = ?",
             (memory_id,),
         )
         emb_row = cursor.fetchone()
         embedding = None
         if emb_row:
             embedding_bytes = emb_row["embedding"]
-            dimension = emb_row["dimension"]
             embedding = np.frombuffer(embedding_bytes, dtype=np.float32).tolist()
 
         return self._row_to_memory_piece(row, embedding)
@@ -173,76 +175,6 @@ class MemoryRepository:
         self.conn.commit()
         return cursor.rowcount > 0
 
-    async def search_by_embedding(
-        self,
-        query_embedding: list[float],
-        scope: MemoryScope,
-        user_id: str | None = None,
-        chat_id: str | None = None,
-        limit: int = 10,
-        min_confidence: float = -1.0,
-    ) -> list[tuple[MemoryPiece, float]]:
-        """Search memory by embedding similarity.
-
-        Args:
-            query_embedding: Query vector
-            scope: Memory scope filter
-            user_id: Filter by user
-            chat_id: Filter by chat
-            limit: Maximum results
-            min_confidence: Minimum confidence threshold
-
-        Returns:
-            List of (memory_piece, similarity_score) tuples, sorted by score
-        """
-        cursor = self.conn.cursor()
-
-        # Build query with filters
-        sql = """
-            SELECT m.*, e.embedding, e.dimension
-            FROM memory_pieces m
-            JOIN memory_embeddings e ON m.id = e.memory_id
-            WHERE m.scope = ? AND m.confidence >= ?
-        """
-        params = [scope.value, min_confidence]
-
-        if user_id:
-            sql += " AND m.user_id = ?"
-            params.append(user_id)
-
-        if chat_id:
-            sql += " AND m.chat_id = ?"
-            params.append(chat_id)
-
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-
-        # Calculate similarity scores
-        query_vec = np.array(query_embedding, dtype=np.float32)
-        results = []
-
-        for row in rows:
-            embedding_bytes = row["embedding"]
-            dimension = row["dimension"]
-            memory_vec = np.frombuffer(embedding_bytes, dtype=np.float32)
-
-            # Cosine similarity
-            similarity = self._cosine_similarity(query_vec, memory_vec)
-
-            # Normalize to 0-1 range
-            normalized_score = (similarity + 1.0) / 2.0
-
-            # Add confidence boost
-            final_score = normalized_score + row["confidence"] * 0.1
-
-            embedding_list = memory_vec.tolist()
-            memory_piece = self._row_to_memory_piece(row, embedding_list)
-            results.append((memory_piece, final_score))
-
-        # Sort by score and limit
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:limit]
-
     async def get_by_scope(
         self,
         scope: MemoryScope,
@@ -284,7 +216,7 @@ class MemoryRepository:
         memories = []
         for row in rows:
             cursor.execute(
-                "SELECT embedding, dimension FROM memory_embeddings WHERE memory_id = ?",
+                "SELECT embedding FROM memory_embeddings WHERE memory_id = ?",
                 (row["id"],),
             )
             emb_row = cursor.fetchone()
@@ -330,23 +262,3 @@ class MemoryRepository:
             entities=json.loads(row["entities"]) if row["entities"] else [],
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
         )
-
-    @staticmethod
-    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-        """Calculate cosine similarity between two vectors.
-
-        Args:
-            a: First vector
-            b: Second vector
-
-        Returns:
-            Cosine similarity (-1 to 1)
-        """
-        if a.size != b.size:
-            raise ValueError(f"Vector size mismatch: {a.size} vs {b.size}")
-        dot = np.dot(a, b)
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return float(dot / (norm_a * norm_b))

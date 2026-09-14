@@ -38,6 +38,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from .character import build_system_prompt
 from .config import Config, EndpointAndModel, get_config
 from .diary import Diary
+from .infrastructure.memory.diary_context_injector import DiaryContextInjector
+from .infrastructure.memory.working_memory_file_store import WorkingMemoryFileStore
 from .openai_chat import Message, OpenAIChat
 
 # Import from parent-level tools.py, not tools package
@@ -67,6 +69,82 @@ def _resolve_upstream(config: Config) -> EndpointAndModel:
     return config.llm
 
 
+
+def _resolve_linked_user_ids(config: Config, desktop_user_id: str) -> list[str]:
+    """Resolve linked Telegram user IDs for cross-channel memory access.
+
+    If desktop_user_id matches desktop_owner_telegram_id, return [desktop_user_id].
+    Otherwise return empty list.
+
+    Args:
+        config: Application config
+        desktop_user_id: Current desktop user identifier
+
+    Returns:
+        List of linked user IDs (may be empty)
+    """
+    if config.desktop_owner_telegram_id and desktop_user_id == config.desktop_owner_telegram_id:
+        return [desktop_user_id]
+    return []
+
+
+def _get_working_memory_for_user(user_ids: list[str], wm_store: WorkingMemoryFileStore | None) -> str:
+    """Load working memory text for given users.
+
+    Args:
+        user_ids: List of user IDs to fetch WM for
+        wm_store: Working memory file store
+
+    Returns:
+        Combined working memory text or empty string
+    """
+    if not wm_store or not user_ids:
+        return ""
+
+    try:
+        all_data = wm_store.load_all()
+        if not all_data:
+            return ""
+
+        texts = []
+        for uid in user_ids:
+            if uid in all_data:
+                user_wm = all_data[uid]
+                if user_wm.strip():
+                    texts.append(f"## User {uid}\n{user_wm.strip()}")
+
+        return "\n\n".join(texts) if texts else ""
+    except Exception as e:
+        logger.error(f"Failed to load working memory: {e}")
+        return ""
+
+
+def _check_is_papik(config: Config, request_headers: dict) -> bool:
+    """Check if request is from papik (owner).
+
+    Checks for X-Papik-Auth header or matches desktop_owner_telegram_id
+    from config if available.
+
+    Args:
+        config: Application config
+        request_headers: Request headers dict
+
+    Returns:
+        True if request is authenticated as papik
+    """
+    # Check explicit header first
+    if request_headers.get("X-Papik-Auth") == "true":
+        return True
+
+    # Check if desktop_owner_telegram_id is configured and matches
+    if config.desktop_owner_telegram_id:
+        user_id = request_headers.get("X-User-ID", "")
+        if user_id == config.desktop_owner_telegram_id:
+            return True
+
+    return False
+
+
 def _build_proxy_tools(diary: Diary | None, openai: OpenAIChat, config: Config) -> OpenAITools:
     tools = OpenAITools()
     if diary is not None:
@@ -94,7 +172,11 @@ def _save_last_query(payload: Any) -> None:
         logger.debug(f"Failed to write last_query.json: {e}")
 
 
-def create_proxy_app(diary: Diary | None) -> FastAPI:
+def create_proxy_app(
+    diary: Diary | None,
+    wm_store: WorkingMemoryFileStore | None = None,
+    injector: DiaryContextInjector | None = None,
+) -> FastAPI:
     """Build the FastAPI app implementing the proxy server."""
     app = FastAPI(title="kunipy proxy")
 
@@ -112,8 +194,37 @@ def create_proxy_app(diary: Diary | None) -> FastAPI:
         openai = OpenAIChat(endpoint=upstream_endpoint)
         tools = _build_proxy_tools(diary, openai, config)
 
-        # Proxy doesn't use working memory - build system prompt without it
-        system_prompt = build_system_prompt(config, working_memory_text="")
+        # Phase 5: WM + diary RAG for papik, plain persona for others
+        # Check if request is from papik (owner) for WM + diary RAG
+        is_papik = _check_is_papik(config, dict(request.headers))
+
+        # Load working memory for papik if available
+        wm_text = ""
+        if is_papik and wm_store:
+            user_id = request.headers.get("X-User-ID", "")
+            linked_ids = _resolve_linked_user_ids(config, user_id)
+            wm_text = _get_working_memory_for_user(linked_ids, wm_store)
+
+        # Inject diary context via auto-RAG if enabled
+        diary_context = ""
+        if is_papik and injector and config.diary_auto_rag_enabled:
+            try:
+                last_user_msg = ""
+                for m in reversed(client_messages):
+                    if m.get("role") == "user" and m.get("content"):
+                        last_user_msg = m["content"]
+                        break
+                if last_user_msg:
+                    diary_context = await injector.inject_into_system_prompt(last_user_msg)
+            except Exception as e:
+                logger.warning(f"Failed to inject diary context: {e}")
+
+        # Build system prompt with WM and diary context
+        system_prompt = build_system_prompt(
+            config,
+            working_memory_text=wm_text,
+            diary_context=diary_context,
+        )
 
         messages: list[Message] = []
         for m in client_messages:

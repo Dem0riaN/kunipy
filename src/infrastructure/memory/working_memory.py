@@ -2,19 +2,48 @@
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...interfaces.memory import IWorkingMemory, WorkingMemoryContext
+
+if TYPE_CHECKING:
+    from .working_memory_file_store import WorkingMemoryFileStore
 
 logger = logging.getLogger(__name__)
 
 
 class WorkingMemory(IWorkingMemory):
-    """In-memory working memory for current interaction state."""
+    """In-memory working memory for current interaction state.
 
-    def __init__(self):
-        """Initialize working memory store."""
+    Phase 3: Optional file persistence via WorkingMemoryFileStore.
+    When file_store is configured, save_to_file() writes all contexts to disk
+    so state survives application restarts.
+    """
+
+    def __init__(
+        self,
+        file_store: "WorkingMemoryFileStore | None" = None,
+    ):
+        """Initialize working memory store.
+
+        Args:
+            file_store: Optional file persistence handler
+        """
         self._contexts: dict[tuple[str, str], WorkingMemoryContext] = {}
+        self._file_store = file_store
+
+        # Load from file if available
+        if file_store:
+            try:
+                loaded = file_store.load_contexts()
+                for ctx in loaded:
+                    key = (ctx.user_id, ctx.chat_id)
+                    self._contexts[key] = ctx
+                if loaded:
+                    logger.info(f"Loaded {len(loaded)} working memory contexts from file")
+            except Exception as e:
+                logger.warning(f"Failed to load working memory from file: {e}")
+
         logger.info("Initialized WorkingMemory")
 
     async def get_context(
@@ -123,9 +152,21 @@ class WorkingMemory(IWorkingMemory):
             logger.debug(f"Cleared context for user={user_id}, chat={chat_id}")
 
     def save_to_file(self) -> None:
-        """Persist working memory to disk.
+        """Persist working memory to disk via WorkingMemoryFileStore.
 
-        Note: Currently a no-op. Persistence will be implemented in future phases
-        when long-term session recovery is needed (ТЗ-002 punkt 7.6).
+        Phase 3: Delegates to file_store.save_all() when configured.
+        No-op when file_store is not set.
         """
-        logger.debug("save_to_file called (no-op - persistence not yet implemented)")
+        if self._file_store:
+            try:
+                self._file_store.save_all(self._contexts)
+                logger.debug(f"Saved {len(self._contexts)} working memory contexts to file")
+            except Exception as e:
+                logger.error(f"Failed to save working memory to file: {e}")
+        else:
+            logger.debug("save_to_file called but no file_store configured")
+
+    @property
+    def contexts(self) -> dict[tuple[str, str], WorkingMemoryContext]:
+        """Access raw contexts dict (read-only intent)."""
+        return self._contexts

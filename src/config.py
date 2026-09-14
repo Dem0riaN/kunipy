@@ -67,12 +67,29 @@ class Config:
     telegram_phone: str = ""
     telegram_database_directory: str = "telegram_data"
 
+    # Desktop (ТЗ-004) — master switch off by default
+    desktop_enabled: bool = False
+    desktop_window_width: int = 800
+    desktop_window_height: int = 600
+    desktop_fps: int = 30
+    desktop_model_path: str = ""
+    desktop_motion_dir: str = ""
+
     # Diary
     diary_enabled: bool = False
     diary_dir: str = "diary"
     diary_min_relatedness: float = 0.5
     diary_plagiarism_threshold: float = 0.95
     remind_use_ask: bool = True
+    # Phase 1: ChromaDB + migration
+    diary_chroma_dir: str = "data/diary_chroma"
+    diary_embedding_dimension: int = 1024
+    diary_auto_rag_enabled: bool = True           # C++ kuni default: on
+    diary_context_token_threshold: int = 40000    # token threshold for auto-dump
+    diary_max_context_entries: int = 5
+    diary_max_merge_span_days: int = 14           # sleep_consolidator.md L68
+    diary_knn_soft_limit: int = 5                 # proactive merging threshold
+    sleep_chance: float = 1.0                     # 1.0 = deterministic 04:00 sleep
 
     # Lockdown
     lockdown: LockdownMode = LockdownMode.NONE
@@ -170,9 +187,7 @@ class Config:
 
     # Memory system (ТЗ-002)
     memory_enabled: bool = True
-    memory_backend: str = "postgresql"  # "sqlite" or "postgresql"
-    memory_db_path: str = "data/memory.db"  # For SQLite backend
-    memory_postgres_url: str = "postgresql://kunipy:kunipy@localhost:5432/kunipy"  # For PostgreSQL backend
+    memory_db_path: str = "data/memory.db"  # SQLite path (ChromaDB for vectors)
     memory_min_similarity: float = 0.5
     desktop_owner_telegram_id: str | None = None
 
@@ -244,6 +259,25 @@ class Config:
         cfg.diary_dir = diary_cfg.get("directory", cfg.diary_dir)
         cfg.diary_min_relatedness = diary_cfg.get("min_relatedness", cfg.diary_min_relatedness)
         cfg.diary_plagiarism_threshold = diary_cfg.get("plagiarism_threshold", cfg.diary_plagiarism_threshold)
+        # Phase 1: ChromaDB + diary pipeline config
+        cfg.diary_chroma_dir = diary_cfg.get("chroma_dir", cfg.diary_chroma_dir)
+        cfg.diary_embedding_dimension = diary_cfg.get("embedding_dimension", cfg.diary_embedding_dimension)
+        cfg.diary_auto_rag_enabled = diary_cfg.get("auto_rag_enabled", cfg.diary_auto_rag_enabled)
+        cfg.diary_context_token_threshold = diary_cfg.get("context_token_threshold", cfg.diary_context_token_threshold)
+        cfg.diary_max_context_entries = diary_cfg.get("max_context_entries", cfg.diary_max_context_entries)
+        cfg.diary_max_merge_span_days = diary_cfg.get("max_merge_span_days", cfg.diary_max_merge_span_days)
+        cfg.diary_knn_soft_limit = diary_cfg.get("knn_soft_limit", cfg.diary_knn_soft_limit)
+        # sleep_chance may live in [diary] or [app]; check diary first, then app
+        cfg.sleep_chance = diary_cfg.get("sleep_chance", cfg.sleep_chance)
+
+        # Desktop character (ТЗ-004)
+        desktop_cfg = data.get("desktop", {})
+        cfg.desktop_enabled = desktop_cfg.get("enabled", cfg.desktop_enabled)
+        cfg.desktop_window_width = desktop_cfg.get("window_width", cfg.desktop_window_width)
+        cfg.desktop_window_height = desktop_cfg.get("window_height", cfg.desktop_window_height)
+        cfg.desktop_fps = desktop_cfg.get("fps", cfg.desktop_fps)
+        cfg.desktop_model_path = desktop_cfg.get("model_path", cfg.desktop_model_path)
+        cfg.desktop_motion_dir = desktop_cfg.get("motion_dir", cfg.desktop_motion_dir)
 
         # Lockdown
         lockdown_cfg = data.get("lockdown", {})
@@ -328,9 +362,7 @@ class Config:
         # Memory system (ТЗ-002)
         memory_cfg = data.get("memory", {})
         cfg.memory_enabled = memory_cfg.get("enabled", cfg.memory_enabled)
-        cfg.memory_backend = memory_cfg.get("backend", cfg.memory_backend)
         cfg.memory_db_path = memory_cfg.get("db_path", cfg.memory_db_path)
-        cfg.memory_postgres_url = memory_cfg.get("postgres_url", cfg.memory_postgres_url)
         cfg.memory_min_similarity = memory_cfg.get("min_similarity", cfg.memory_min_similarity)
         cfg.desktop_owner_telegram_id = memory_cfg.get("desktop_owner_telegram_id", cfg.desktop_owner_telegram_id)
 
@@ -392,9 +424,7 @@ def save_config(cfg: Config, path: Path | str = "config.toml") -> None:
         },
         "memory": {
             "enabled": cfg.memory_enabled,
-            "backend": cfg.memory_backend,
             "db_path": cfg.memory_db_path,
-            "postgres_url": cfg.memory_postgres_url,
             "min_similarity": cfg.memory_min_similarity,
             "desktop_owner_telegram_id": cfg.desktop_owner_telegram_id,
         },
@@ -413,6 +443,14 @@ def save_config(cfg: Config, path: Path | str = "config.toml") -> None:
             "directory": cfg.diary_dir,
             "min_relatedness": cfg.diary_min_relatedness,
             "plagiarism_threshold": cfg.diary_plagiarism_threshold,
+            "chroma_dir": cfg.diary_chroma_dir,
+            "embedding_dimension": cfg.diary_embedding_dimension,
+            "auto_rag_enabled": cfg.diary_auto_rag_enabled,
+            "context_token_threshold": cfg.diary_context_token_threshold,
+            "max_context_entries": cfg.diary_max_context_entries,
+            "max_merge_span_days": cfg.diary_max_merge_span_days,
+            "knn_soft_limit": cfg.diary_knn_soft_limit,
+            "sleep_chance": cfg.sleep_chance,
         },
         "lockdown": {
             "mode": cfg.lockdown.value,

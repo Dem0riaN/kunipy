@@ -856,6 +856,51 @@ def create_leave_chat_tool(telegram: TelegramClient) -> Tool:
     )
 
 
+def create_wait_tool() -> Tool:
+    """Wait until further notifications.
+
+    Mirrors the C++ Kuni implementation: the handler simply returns "Success"
+    and the worker loop detects the call and breaks out, signalling that the
+    LLM is done with the current notification.
+
+    Use this when the model decides there's nothing more to do on this turn —
+    e.g. it already sent a message and is waiting for the user's reply, or it
+    decided to ignore the notification.
+    """
+
+    async def _handle(ctx: ToolContext) -> str:
+        return "Success"
+
+    return Tool(
+        name="wait",
+        description="Wait until further notifications. Call this when you have nothing more to do on the current turn.",
+        parameters={"type": "object", "properties": {}},
+        handler=_handle,
+    )
+
+
+def create_pause_tool() -> Tool:
+    """Pause the conversation.
+
+    Alias for #wait — exists for prompt compatibility with the C++ Kuni
+    which registers both. The LLM may use either depending on how it was
+    primed.
+    """
+
+    async def _handle(ctx: ToolContext) -> str:
+        return "Success"
+
+    return Tool(
+        name="pause",
+        description="Pauses the conversation.",
+        parameters={"type": "object", "properties": {}},
+        handler=_handle,
+    )
+
+
+_TERMINAL_TOOL_NAMES = frozenset({"wait", "pause"})
+
+
 def create_default_tools(
     telegram: TelegramClient,
     diary: Diary,
@@ -907,5 +952,9 @@ def create_default_tools(
         tools.insert(create_join_chat_tool(telegram))
     if get_config().can_leave_chats:
         tools.insert(create_leave_chat_tool(telegram))
+
+    # Flow-control tools (wait/pause — signal the LLM is done for this turn)
+    tools.insert(create_wait_tool())
+    tools.insert(create_pause_tool())
 
     return tools
