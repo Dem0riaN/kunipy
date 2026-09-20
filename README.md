@@ -1,6 +1,6 @@
 # Kunipy - AI Character with Long-term Memory
 
-Kunipy is a conversational AI character with persistent memory, supporting Telegram, desktop, and voice channels.
+Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI with Telegram interface, built with clean architecture and dependency injection.
 
 ## Features
 
@@ -12,82 +12,111 @@ Kunipy is a conversational AI character with persistent memory, supporting Teleg
 - **Working Memory**: In-memory short-term context with `.md` file persistence (promises, plans, pending questions)
 - **Conversation History**: Full message storage with provenance tracking in SQLite
 
-### Memory System (ТЗ-002)
 
-**Hybrid Architecture (SQLite + ChromaDB):**
-- **ChromaDB**: HNSW approximate nearest neighbor (ANN) vector search for fast semantic retrieval
-- **SQLite (WAL mode)**: Metadata, links, tags, user preferences, conversation history
-- **Dual-write pattern**: `MemoryService.create_memory()` writes to both stores atomically
-- Multi-level memory hierarchy (working memory, long-term memory, conversation history)
-- Scope-based visibility (PRIVATE, USER, CHAT, SHARED, GLOBAL)
-- Automatic consolidation and importance scoring
-- Cross-channel context linking for desktop owner
+- ✅ **Clean Architecture** — Application/Domain/Interfaces/Infrastructure layers
+- ✅ **Dependency Injection** — Explicit constructor injection, composition root pattern
+- ✅ **Protocol-based interfaces** — All major components implement typed protocols
+- ✅ **Message delivery tracking** — SQLite-backed storage with 10-second verification
+- ✅ Real Telegram integration via `aiotdlib`
+- ✅ LLM tool-calling loop (OpenAI-compatible)
+- ✅ Telegram messaging, editing, forwarding, reactions, group administration
+- ✅ Photo understanding (vision)
+- ✅ Voice-message transcription (hearing)
+- ✅ Text-to-speech / voice-message generation
+- ✅ AI image generation
+- ✅ Web search
+- ✅ OpenAI-compatible proxy server
+- ✅ Prometheus LLM usage metrics
+- ✅ Character persona and system-prompt management
+- ✅ Notification queue and worker system
+- ✅ Diary storage with embeddings and semantic search
 
-**Components:**
-- `MemoryService` - High-level API with dual-write (ChromaDB + SQLite)
-- `MemoryFormationService` - LLM-based automatic memory extraction
-- `MemoryIntegratedWorker` - Worker with transparent memory integration
-- `MemoryStore` - ChromaDB wrapper for vector search (HNSW ANN)
-- `MemoryRepository` - SQLite metadata storage
-- `MemoryLinkRepository` - Entity relationships (SQLite)
-- `UserPreferenceRepository` - User preferences (SQLite)
-- `MemoryTagRepository` - Memory tags (SQLite)
-- `ConversationRepository` - Message history (SQLite)
-- `WorkingMemory` - In-memory context with `.md` file persistence
+### In Progress / Planned
 
-### Legacy Support
-- **kuni Archive Reader**: Read C++ kuni diary format (markdown + JSON metadata)
-- **Migration Tool**: Convert legacy memories to kunipy format
-- **Memory Exporter**: Export to JSON/JSONL/Markdown formats
+- 🟡 **Memory system (ТЗ-002)** — Interfaces готовы, stub implementations работают; полная реализация (ChromaDB, 6-level retrieval, consolidation) запланирована
+- 🟡 **Vision enhancements** — Photo understanding работает; video frame extraction не реализован
+- 🟡 **Diary RAG quality** — Зависит от embedding endpoint и ingestion strategy
+- 🟡 **Optional capabilities** — Vision, hearing, TTS, web search, image generation требуют внешних backends
 
-## Quick Start
+### Not Implemented
 
-### Prerequisites
-- Python 3.12+
-- OpenAI-compatible API endpoint
-- Telegram API credentials (optional)
+- ❌ Video-message frame extraction
+- ❌ Dedicated LLM diary-write tool
+- ❌ Full C++ kuni memory workflow parity
 
-**Note:** kunipy uses SQLite with WAL mode for metadata and ChromaDB for vector search. No external database server required.
+## Requirements
 
-### Installation
+- Python 3.11+
+- Dependencies: `pip install -e .` (see `pyproject.toml`)
+- Telegram API ID/hash from [my.telegram.org](https://my.telegram.org)
+- OpenAI-compatible LLM endpoint (local Ollama, cloud provider, etc.)
+
+## Installation
 
 ```bash
-# Clone repository
-cd kunipy
+cd kunipy-main
+
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 # Install dependencies
-python -m pip install -r requirements.txt
-
-# Configure
-cp config.toml.example config.toml
-# Edit config.toml with your settings
+pip install -e .
 ```
 
 ### Configuration
 
-**Essential settings in `config.toml`:**
+**First run generates `config.toml`:**
 
-```toml
-# LLM endpoint
-[llm]
-base_url = "http://localhost:1234/v1"
-model = "llama-3.3-70b"
-
-# Embedding endpoint
-[embedding]
-base_url = "http://localhost:1234/v1"
-model = "text-embedding-3-large"
-
-# Memory system (hybrid SQLite + ChromaDB)
-memory_enabled = true
-memory_db_path = "data/memory.db"  # SQLite metadata
-memory_min_similarity = 0.5
-
-# Desktop owner (for cross-channel context)
-desktop_owner_telegram_id = "telegram:123456789"
+```bash
+python run.py
+# Creates config.toml from defaults, then exits
 ```
 
-### Running
+Edit `config.toml` with your credentials. Minimal example:
+
+```toml
+[llm]
+model = "deepseek-r1:14b"
+[llm.endpoint]
+base_url = "http://localhost:11434/v1/"
+bearer_key = ""
+
+[character]
+name = "Куни"
+
+[telegram]
+enabled = true
+api_id = 12345678
+api_hash = "your_hash_from_my_telegram_org"
+phone = "+79991234567"
+database_directory = "data/tdlib"
+
+[diary]
+enabled = true
+directory = "data/diary"
+min_relatedness = 0.5
+
+[lockdown]
+mode = "papik_only"  # "none" | "contacts_only" | "papik_only"
+papik_chat_id = 123456789  # Your Telegram user ID
+
+[capabilities.hearing]
+enabled = false
+model = "whisper-1"
+[capabilities.hearing.endpoint]
+base_url = "http://localhost:11434/v1/"
+
+[capabilities.vision]
+enabled = false
+model = "llava:13b"
+[capabilities.vision.endpoint]
+base_url = "http://localhost:11434/v1/"
+```
+
+See `config.example.toml` for full reference with bilingual (RU/EN) comments.
+
+## Running
 
 ```bash
 # Activate virtual environment
@@ -99,315 +128,180 @@ source .venv/bin/activate  # Linux/macOS
 python run.py
 ```
 
-### Memory Tools
+Run from the directory containing `config.toml`. On first run with `telegram_enabled = true`, aiotdlib will prompt for:
+- Phone number
+- SMS/Telegram login code
+- 2FA password (if enabled)
 
-**Migrate from C++ kuni:**
-```bash
-python migrate_kuni.py --kuni-dir ./old_diary --dry-run
-python migrate_kuni.py --kuni-dir ./old_diary --scope global
-```
-
-**Export memories:**
-```bash
-# Export to JSON
-python export_memory.py --output memory.json
-
-# Export to Markdown (human-readable)
-python export_memory.py --output memory.md --format markdown
-
-# Filter by scope/user
-python export_memory.py --output user_memories.json --user-id telegram:12345
-```
+Character files (`prompts/character_base.md`, `prompts/character_appearance.md`, etc.) are loaded from `prompts/` directory.
 
 ## Architecture
 
-### Project Structure
+Проект следует **Clean Architecture** с чётким разделением слоёв:
+
+### Core Layers
+
+```
+┌─────────────────────────────────────────────┐
+│  Application Layer (src/application/)       │
+│  - lifecycle.py                             │
+│  - telegram_handler.py                      │
+│  - worker_orchestrator.py                   │
+│  - proactive_service.py                     │
+│  - sleep_scheduler.py                       │
+│  - media_service.py                         │
+└─────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────┐
+│  Domain Layer (src/domain/)                 │
+│  - models.py                                │
+│  - delivery/models.py                       │
+│  - memory/models.py                         │
+└─────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────┐
+│  Interfaces Layer (src/interfaces/)         │
+│  - llm.py (IOpenAIChat)                     │
+│  - telegram.py (ITelegramClient)            │
+│  - memory.py (IMemoryStore, IWorkingMemory) │
+│  - delivery.py (IMessageDeliveryTracker)    │
+│  - worker.py (INotificationManager)         │
+│  - media.py (IMediaService)                 │
+└─────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────┐
+│  Infrastructure Layer (src/infrastructure/) │
+│  - delivery/                                │
+│    - storage.py (SQLite WAL mode)           │
+│    - tracker.py                             │
+│    - telegram_checker.py                    │
+│  - memory/                                  │
+│    - stub_store.py (Phase 1 stub)           │
+│  - worker/                                  │
+│    - stub_notification_manager.py           │
+└─────────────────────────────────────────────┘
+```
+
+### Key Components
+
+- **[src/app.py](src/app.py)** — Application entry point and composition root
+- **[src/config.py](src/config.py)** — Configuration management (TOML parsing, no singleton)
+- **[src/worker.py](src/worker.py)** — Worker processing notifications through LLM tool-calling loop
+- **[src/diary.py](src/diary.py)** — Diary/memory system with embeddings and semantic search
+- **[src/di/container.py](src/di/container.py)** — Dependency injection container (composition root)
+- **[src/telegram_client.py](src/telegram_client.py)** — aiotdlib/TDLib wrapper
+- **[src/openai_chat.py](src/openai_chat.py)** — OpenAI-compatible API client
+- **[src/tools.py](src/tools.py)** — LLM function-calling tools (Telegram actions, diary, etc.)
+- **[src/character.py](src/character.py)** — Character persona and system prompt builder
+- **[src/notification_manager.py](src/notification_manager.py)** — Priority queue for events
+- **[src/proxy_server.py](src/proxy_server.py)** — OpenAI-compatible proxy (FastAPI)
+- **[src/metrics.py](src/metrics.py)** — Prometheus metrics
+
+### Design Principles
+
+✅ **Dependency Injection** — Explicit constructor injection, no global singletons  
+✅ **Protocol-based interfaces** — `typing.Protocol` for all major abstractions  
+✅ **Single Responsibility** — Each class has one clear purpose  
+✅ **Composition Root** — Dependencies wired in `di/container.py`  
+✅ **Testability** — 50+ tests (integration + unit) in `tests/`  
+✅ **Layer isolation** — Application → Domain → Interfaces → Infrastructure  
+
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test suites
+pytest tests/integration/
+pytest tests/unit/
+pytest tests/architecture/
+
+# Run with coverage
+pytest --cov=src --cov-report=html
+```
+
+**Test coverage:**
+- Integration tests: DI container, App lifecycle
+- Unit tests: Worker orchestrator, Media service
+- Architecture tests: Interface compliance, layer boundaries, no god objects
+
+## Project Structure
 
 ```
 kunipy-main/
+├── run.py                          # Entry point
+├── config.example.toml             # Configuration reference
+├── pyproject.toml                  # Dependencies
+├── README.md
+├── .gitignore
 ├── src/
-│   ├── app.py                      # Main application entry
-│   ├── worker.py                   # Base worker logic
-│   ├── memory_integrated_worker.py # Worker with memory integration
-│   ├── character.py                # Character prompt building
+│   ├── app.py                      # Main application (DI-based)
 │   ├── config.py                   # Configuration management
+│   ├── worker.py                   # Notification worker (DI-based)
+│   ├── diary.py                    # Memory/diary system (DI-based)
+│   ├── character.py                # Persona management
 │   ├── openai_chat.py              # LLM client
-│   ├── telegram_client.py          # Telegram integration
-│   ├── notification_manager.py     # Event coordination
-│   ├── domain/
-│   │   └── memory_models.py        # Memory domain models
-│   ├── interfaces/
-│   │   ├── llm.py                  # LLM interface protocols
-│   │   └── memory.py               # Memory interface protocols
-│   ├── infrastructure/
-│   │   ├── memory/
-│   │   │   ├── memory_service.py           # High-level memory API (dual-write)
-│   │   │   ├── memory_formation.py         # Automatic memory extraction
-│   │   │   ├── storage.py                  # MemoryStore (ChromaDB wrapper)
-│   │   │   ├── vector_store.py             # ChromaDB vector operations
-│   │   │   ├── memory_repository.py        # SQLite metadata storage
-│   │   │   ├── memory_link_repository.py   # Entity relationships (SQLite)
-│   │   │   ├── user_preference_repository.py # User preferences (SQLite)
-│   │   │   ├── memory_tag_repository.py    # Memory tags (SQLite)
-│   │   │   ├── conversation_repository.py  # Message history (SQLite)
-│   │   │   ├── working_memory.py           # In-memory context + .md persistence
-│   │   │   ├── database.py                 # SQLite schema & connection
-│   │   │   ├── kuni_archive_reader.py      # Legacy C++ kuni format reader
-│   │   │   ├── kuni_migrator.py            # Migration: C++ kuni → kunipy
-│   │   │   └── memory_exporter.py          # Export to JSON/JSONL/Markdown
-│   │   └── embedding_adapter.py    # OpenAI embedding adapter
-│   └── di/
-│       └── container.py            # Dependency injection
-├── migrate_kuni.py                 # CLI migration tool
-├── export_memory.py                # CLI export tool
-├── config.toml                     # Configuration
-├── requirements.txt                # Python dependencies
-└── README.md                       # This file
+│   ├── telegram_client.py          # Telegram client
+│   ├── tools.py                    # LLM function tools
+│   ├── notification_manager.py     # Event queue
+│   ├── proxy_server.py             # OpenAI proxy
+│   ├── metrics.py                  # Prometheus metrics
+│   ├── image_generator.py          # Image generation
+│   ├── application/                # Application services
+│   │   ├── lifecycle.py
+│   │   ├── telegram_handler.py
+│   │   ├── worker_orchestrator.py
+│   │   ├── proactive_service.py
+│   │   ├── sleep_scheduler.py
+│   │   └── media_service.py
+│   ├── domain/                     # Domain models
+│   │   ├── models.py
+│   │   ├── delivery/
+│   │   └── memory/
+│   ├── interfaces/                 # Protocol definitions
+│   │   ├── llm.py
+│   │   ├── telegram.py
+│   │   ├── memory.py
+│   │   ├── delivery.py
+│   │   ├── worker.py
+│   │   └── media.py
+│   ├── infrastructure/             # Infrastructure implementations
+│   │   ├── delivery/               # Message delivery tracking
+│   │   ├── memory/                 # Memory stores
+│   │   └── worker/                 # Worker infrastructure
+│   ├── di/                         # Dependency injection
+│   │   └── container.py
+│   └── tests/                      # Internal tests
+│       ├── architecture/
+│       └── infrastructure/
+├── tests/                          # Test suites
+│   ├── integration/
+│   │   ├── test_di_container.py
+│   │   └── test_app.py
+│   └── unit/
+│       ├── test_worker_orchestrator.py
+│       └── test_media_service.py
+├── prompts/                        # Character prompts
+│   ├── character_base.md
+│   ├── character_appearance.md
+│   ├── system.md
+│   └── ...
+├── data/                           # Runtime data (gitignored)
+│   ├── tdlib/                      # Telegram session
+│   ├── diary/                      # Diary entries
+│   └── delivery.db                 # Delivery tracking
+├── config/                         # Additional configs (gitignored)
+└── docs/
+    └── ARCHITECTURE.md             # Detailed architecture docs
 ```
 
-### Memory System Design
+## Development Roadmap
 
-**Memory Piece Structure:**
-```python
-MemoryPiece(
-    id: str,                    # UUID
-    kind: MemoryKind,           # fact, event, thought, entity_description, other
-    content: str,               # Human-readable content
-    confidence: float,          # -1 to 1 (lie, uncertain, confirmed)
-    importance: float,          # 0 to 1
-    scope: MemoryScope,         # private, user, chat, shared, global
-    user_id: str | None,        # Owner (for USER/CHAT scope)
-    chat_id: str | None,        # Chat context (for CHAT scope)
-    channel: str,               # telegram, desktop, voice
-    embedding: list[float],     # Vector for similarity search
-    source_type: str,           # conversation, migration, manual
-    source_message_ids: list,   # Provenance
-    created_at: datetime,
-    updated_at: datetime,
-    last_used: datetime,
-    usage_count: int,
-    entities: list[str],        # Named entities mentioned
-    metadata: dict,             # Additional context
-)
-```
-
-**Scope Visibility:**
-- PRIVATE: Only desktop owner on desktop channel
-- USER: Specific user across all channels
-- CHAT: All participants in specific chat
-- SHARED: All users in specific channel
-- GLOBAL: Everyone everywhere
-
-**Retrieval Strategy (ChromaDB HNSW):**
-1. Generate query embedding from user message
-2. Resolve accessible scopes (based on user permissions)
-3. Resolve linked user IDs (cross-channel for owner)
-4. Multi-level search via ChromaDB HNSW: CHAT (3) → USER (3) → PRIVATE (2) → GLOBAL (2)
-5. Deduplicate by ID
-6. Rank by similarity score
-7. Return top N pieces
-
-**Dual-Write Pattern:**
-- `MemoryService.create_memory()` writes to ChromaDB (vectors) first, then SQLite (metadata)
-- Ensures consistency: ChromaDB for fast search, SQLite for transactions and relationships
-- SQLite WAL mode enables concurrent reads + single writer without blocking
-
-### Worker Integration
-
-`MemoryIntegratedWorker` extends base `Worker`:
-
-1. **Before LLM call** (`_build_system_prompt`):
-   - Retrieve relevant memories via semantic search
-   - Format as text block
-   - Inject into system prompt
-
-2. **After user message** (`_process_notification`):
-   - Store message in conversation history
-   - Generate LLM response
-   - Extract new memories from recent exchanges
-   - Generate embeddings
-   - Store memories with provenance
-
-## Development
-
-### Code Quality
-
-```bash
-# Lint with ruff
-ruff check .
-
-# Auto-fix issues
-ruff check . --fix
-
-# Format
-ruff format .
-```
-
-### Testing
-
-```bash
-# Test memory formation
-python test_memory_formation.py
-
-# Test simple memory operations
-python test_memory_simple.py
-
-# Test full Worker integration
-python test_memory_worker_integration.py
-```
-
-### Database Schema (SQLite + ChromaDB)
-
-**SQLite tables (metadata & relationships):**
-- `memory_pieces` - Long-term memories (metadata only, embeddings in ChromaDB)
-- `memory_embeddings` - Embedding vectors (BLOB, backup/recovery)
-- `memory_links` - Entity relationships (§35 ТЗ-002)
-- `memory_tags` - Memory categorization tags
-- `user_preferences` - User-specific preferences
-- `conversation_messages` - Full message history
-- `users` - User profiles
-- `chats` - Chat metadata
-
-**ChromaDB collections (vector search):**
-- `memories` - HNSW index for fast approximate nearest neighbor search
-
-See `src/infrastructure/memory/database.py` for SQLite schema.
-
-## Configuration Reference
-
-### Memory Settings
-
-```toml
-# Enable/disable memory system
-memory_enabled = true
-
-# SQLite database path (metadata, links, tags, preferences)
-memory_db_path = "data/memory.db"
-
-# Minimum similarity for retrieval (0-1)
-memory_min_similarity = 0.5
-
-# Maximum conversation history to store
-memory_max_history = 1000
-
-# Desktop owner for cross-channel linking
-desktop_owner_telegram_id = "telegram:123456789"
-```
-
-**Note:** ChromaDB vector index is stored in `data/chroma/` (same directory as SQLite db).
-
-### LLM Settings
-
-```toml
-[llm]
-base_url = "http://localhost:1234/v1"
-model = "llama-3.3-70b"
-bearer_key = ""  # Optional API key
-
-[embedding]
-base_url = "http://localhost:1234/v1"
-model = "text-embedding-3-large"
-bearer_key = ""
-```
-
-### Telegram Settings
-
-```toml
-telegram_enabled = true
-telegram_api_id = 12345
-telegram_api_hash = "your_hash"
-telegram_phone_number = "+1234567890"
-telegram_database_directory = "data/tdlib"
-```
-
-## Troubleshooting
-
-### Memory not working
-
-1. Check `memory_enabled = true` in config.toml
-2. Verify SQLite database exists at `data/memory.db`
-3. Verify ChromaDB index exists at `data/chroma/`
-4. Ensure embedding endpoint is accessible
-5. Check logs for errors: `memory_service.log`
-
-### Performance issues
-
-1. ChromaDB HNSW is optimized for vector search (sub-100ms for <100K memories)
-
-2. Tune retrieval parameters:
-   ```toml
-   memory_min_similarity = 0.4  # Higher = fewer results
-   ```
-
-3. SQLite WAL mode enables concurrent reads without blocking writers
-
-4. For >1M memories, consider archiving old entries
-
-### Migration issues
-
-1. Verify legacy diary format:
-   ```bash
-   python migrate_kuni.py --kuni-dir ./diary --stats
-   ```
-
-2. Dry-run first:
-   ```bash
-   python migrate_kuni.py --kuni-dir ./diary --dry-run
-   ```
-
-3. Check embedding dimensions match (4096 for text-embedding-3-large)
-
-## Technical Specifications
-
-### Implementation Status (ТЗ-002)
-
-**✅ Completed (80%):**
-- Multi-level memory hierarchy
-- Scope-based visibility
-- Vector similarity search
-- Automatic memory formation
-- Cross-channel context
-- Legacy archive reader
-- Migration tools
-- Export utilities
-- Runtime integration
-
-**⏳ Remaining (20%):**
-- Consolidation algorithm
-- Entity relationship graph
-- Diagnostic tools
-- Comprehensive test suite
-
-### Performance Characteristics
-
-**Memory Formation:**
-- LLM call per 6 messages (configurable)
-- ~1-2 seconds per extraction
-- Async/non-blocking
-
-**Memory Retrieval (ChromaDB HNSW):**
-- Vector search: 10-50ms (ChromaDB HNSW ANN)
-- Multi-level search: 4 queries in parallel
-- Total: ~100-200ms
-
-**Storage:**
-- ~1KB per memory piece (SQLite metadata, excluding embedding)
-- ~16KB per embedding (4096 dimensions, float32, ChromaDB)
-- Conversation messages: ~500 bytes average (SQLite)
-
-### Dependencies
-
-**Core:**
-- aiohttp - Async HTTP client
-- numpy - Numerical operations
-- chromadb - Vector database with HNSW indexing
-- aiosqlite - SQLite adapter (async, WAL mode)
-
-**Optional:**
-- aiotdlib - Telegram client
-- Pillow - Image processing
-
-See `requirements.txt` for full list.
+- ✅ **ТЗ-001: Clean Architecture** — Завершено
+- 🚧 **ТЗ-002: Memory System 2.0** — В планах (ChromaDB, 6-level retrieval, consolidation)
+- 🚧 **ТЗ-003: Vision 2.0** — В планах (multi-monitor, desktop vision)
+- 🚧 **ТЗ-004: Avatar/Renderer** — В планах (animation, interaction, desktop UI)
 
 ## License
 
