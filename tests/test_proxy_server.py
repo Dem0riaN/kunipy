@@ -12,9 +12,9 @@ from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import src.config as cfgmod  # noqa: E402
-from src.config import Config, Endpoint, EndpointAndModel  # noqa: E402
-from src.proxy_server import create_proxy_app  # noqa: E402
+import src.config as cfgmod
+from src.config import Config, Endpoint, EndpointAndModel
+from src.proxy_server import create_proxy_app
 
 
 @pytest.fixture

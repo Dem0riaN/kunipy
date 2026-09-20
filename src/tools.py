@@ -15,14 +15,15 @@ import difflib
 import json
 import logging
 import random
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
+from collections.abc import Callable
+from typing import Any
 
 import aiohttp
 
 from .config import get_config
 from .diary import Diary
-from .openai_chat import OpenAIChat, Message
-from .telegram_client import TelegramClient, TelegramChat, TelegramMessage
+from .openai_chat import Message, OpenAIChat
+from .telegram_client import TelegramChat, TelegramClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,10 @@ class ToolContext:
 
     def __init__(
         self,
-        args: Dict[str, Any],
+        args: dict[str, Any],
         logger: logging.Logger,
-        temporary_context: List[Message],
-        all_tool_calls: Optional[List[Dict[str, Any]]] = None,
+        temporary_context: list[Message],
+        all_tool_calls: list[dict[str, Any]] | None = None,
     ):
         self.args = args
         self.logger = logger
@@ -50,7 +51,7 @@ class Tool:
         self,
         name: str,
         description: str,
-        parameters: Dict[str, Any],
+        parameters: dict[str, Any],
         handler: Callable[[ToolContext], Any],
     ):
         self.name = name
@@ -58,7 +59,7 @@ class Tool:
         self.parameters = parameters
         self.handler = handler
 
-    def to_json_schema(self) -> Dict[str, Any]:
+    def to_json_schema(self) -> dict[str, Any]:
         """Convert to OpenAI function calling schema."""
         return {
             "type": "function",
@@ -74,25 +75,25 @@ class OpenAITools:
     """Container for all tools available to the LLM."""
 
     def __init__(self):
-        self._tools: Dict[str, Tool] = {}
+        self._tools: dict[str, Tool] = {}
 
     def insert(self, tool: Tool) -> None:
         """Register a tool."""
         self._tools[tool.name] = tool
 
-    def get(self, name: str) -> Optional[Tool]:
+    def get(self, name: str) -> Tool | None:
         """Get a tool by name."""
         return self._tools.get(name)
 
-    def to_json_schemas(self) -> List[Dict[str, Any]]:
+    def to_json_schemas(self) -> list[dict[str, Any]]:
         """Get all tool schemas for OpenAI API."""
         return [t.to_json_schema() for t in self._tools.values()]
 
     async def handle_tool_calls(
         self,
-        tool_calls: List[Dict[str, Any]],
-        temporary_context: List[Message],
-    ) -> List[Message]:
+        tool_calls: list[dict[str, Any]],
+        temporary_context: list[Message],
+    ) -> list[Message]:
         """Execute tool calls and return results as tool messages."""
         results = []
         for tc in tool_calls:
@@ -127,14 +128,41 @@ class OpenAITools:
                     content=content,
                     tool_call_id=tc.get("id"),
                 ))
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
                 logger.error(f"Tool {name} failed: {e}")
                 results.append(Message(
                     role="tool",
-                    content=f"Error: {str(e)}",
+                    content=f"Error: {e!s}",
                     tool_call_id=tc.get("id"),
                 ))
         return results
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        """Call a single tool by name with arguments.
+
+        Args:
+            name: Tool name
+            args: Tool arguments
+
+        Returns:
+            Tool result (str or dict)
+
+        Raises:
+            KeyError: If tool not found
+            Exception: If tool execution fails
+        """
+        tool = self._tools.get(name)
+        if not tool:
+            raise KeyError(f"Tool '{name}' not found")
+
+        ctx = ToolContext(
+            args=args,
+            logger=logger,
+            temporary_context=[],
+            all_tool_calls=[],
+        )
+        result = await tool.handler(ctx)
+        return result
 
 
 # ============================================================
@@ -143,8 +171,8 @@ class OpenAITools:
 
 def create_send_telegram_message_tool(
     telegram: TelegramClient,
-    chat: Optional[TelegramChat] = None,
-    recent_bot_messages: Optional[List[str]] = None,
+    chat: TelegramChat | None = None,
+    recent_bot_messages: list[str] | None = None,
 ) -> Tool:
     """Send a message to a Telegram chat."""
 
@@ -204,7 +232,7 @@ def create_send_telegram_message_tool(
     )
 
 
-def _check_anti_repeat(text: str, recent_bot_messages: Optional[List[str]]) -> Optional[str]:
+def _check_anti_repeat(text: str, recent_bot_messages: list[str] | None) -> str | None:
     """Compare `text` against the bot's own recent messages in this chat and
     return a rejection message (instead of sending) if it looks like a
     near-duplicate of something already said.
@@ -212,6 +240,9 @@ def _check_anti_repeat(text: str, recent_bot_messages: Optional[List[str]]) -> O
     Uses plain text similarity (difflib) rather than embeddings, trading a
     bit of semantic precision for zero extra network round-trips on every
     single message send.
+
+    If repetition is detected, returns the anti_repeat.md prompt content
+    to guide the LLM toward better behavior.
     """
     if not recent_bot_messages or not text.strip():
         return None
@@ -229,10 +260,21 @@ def _check_anti_repeat(text: str, recent_bot_messages: Optional[List[str]]) -> O
     avg_ratio = sum(ratios) / len(ratios)
 
     if max_ratio >= config.anti_repeat_trigger_max or avg_ratio >= config.anti_repeat_trigger_avg:
-        return (
-            "Error: this message is too similar to something you already said recently in this chat "
-            f"(similarity={max_ratio:.2f}). Say something meaningfully different, or don't send anything."
+        # Load anti_repeat prompt from prompts/anti_repeat.md
+        from prompt_loader import load_anti_repeat_prompt
+
+        anti_repeat_guidance = load_anti_repeat_prompt()
+
+        base_error = (
+            f"Error: this message is too similar to something you already said recently in this chat "
+            f"(similarity={max_ratio:.2f})."
         )
+
+        if anti_repeat_guidance:
+            return f"{base_error}\n\n{anti_repeat_guidance}"
+        else:
+            return f"{base_error} Say something meaningfully different, or don't send anything."
+
     return None
 
 
@@ -253,7 +295,7 @@ async def _simulate_typing(telegram: TelegramClient, chat_id: int, text: str) ->
         await telegram.send_typing(chat_id)
         if duration > 0.1:
             await asyncio.sleep(duration)
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         logger.debug(f"Typing simulation failed (non-fatal): {e}")
 
 
@@ -391,8 +433,8 @@ async def _handle_ask(
 
 def create_sticker_tools(
     telegram: TelegramClient,
-    chat: Optional[TelegramChat] = None,
-) -> List[Tool]:
+    chat: TelegramChat | None = None,
+) -> list[Tool]:
     """Create sticker-related tools."""
     tools = []
 
@@ -458,7 +500,7 @@ def create_sticker_tools(
 
 def create_take_photo_tool(
     telegram: TelegramClient,
-    chat: Optional[TelegramChat] = None,
+    chat: TelegramChat | None = None,
 ) -> Tool:
     """Generate an image using Stable Diffusion and send it to the chat."""
 
@@ -501,7 +543,7 @@ def create_take_photo_tool(
 def create_record_audio_tool(
     telegram: TelegramClient,
     openai: OpenAIChat,
-    chat: Optional[TelegramChat] = None,
+    chat: TelegramChat | None = None,
 ) -> Tool:
     """Generate a voice message using TTS and send it to the chat."""
 
@@ -638,7 +680,7 @@ def create_remove_message_tool(
 
 def create_group_admin_tools(
     telegram: TelegramClient,
-) -> List[Tool]:
+) -> list[Tool]:
     """Create group admin tools."""
     tools = []
 
@@ -725,18 +767,17 @@ def create_web_search_tool() -> Tool:
             headers["Authorization"] = f"Bearer {config.web_search_ollama_key}"
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://ollama.com/api/web_search",
-                    json={"query": query, "max_results": max_results},
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status != 200:
-                        err = await resp.text()
-                        return f"Error: web search failed ({resp.status}): {err[:300]}"
-                    data = await resp.json()
-        except Exception as e:
+            async with aiohttp.ClientSession() as session, session.post(
+                "https://ollama.com/api/web_search",
+                json={"query": query, "max_results": max_results},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    err = await resp.text()
+                    return f"Error: web search failed ({resp.status}): {err[:300]}"
+                data = await resp.json()
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             return f"Error: web search request failed: {e}"
 
         results = data.get("results", [])
@@ -815,13 +856,58 @@ def create_leave_chat_tool(telegram: TelegramClient) -> Tool:
     )
 
 
+def create_wait_tool() -> Tool:
+    """Wait until further notifications.
+
+    Mirrors the C++ Kuni implementation: the handler simply returns "Success"
+    and the worker loop detects the call and breaks out, signalling that the
+    LLM is done with the current notification.
+
+    Use this when the model decides there's nothing more to do on this turn —
+    e.g. it already sent a message and is waiting for the user's reply, or it
+    decided to ignore the notification.
+    """
+
+    async def _handle(ctx: ToolContext) -> str:
+        return "Success"
+
+    return Tool(
+        name="wait",
+        description="Wait until further notifications. Call this when you have nothing more to do on the current turn.",
+        parameters={"type": "object", "properties": {}},
+        handler=_handle,
+    )
+
+
+def create_pause_tool() -> Tool:
+    """Pause the conversation.
+
+    Alias for #wait — exists for prompt compatibility with the C++ Kuni
+    which registers both. The LLM may use either depending on how it was
+    primed.
+    """
+
+    async def _handle(ctx: ToolContext) -> str:
+        return "Success"
+
+    return Tool(
+        name="pause",
+        description="Pauses the conversation.",
+        parameters={"type": "object", "properties": {}},
+        handler=_handle,
+    )
+
+
+_TERMINAL_TOOL_NAMES = frozenset({"wait", "pause"})
+
+
 def create_default_tools(
     telegram: TelegramClient,
     diary: Diary,
     openai: OpenAIChat,
-    current_chat: Optional[TelegramChat] = None,
+    current_chat: TelegramChat | None = None,
     is_admin: bool = False,
-    recent_bot_messages: Optional[List[str]] = None,
+    recent_bot_messages: list[str] | None = None,
 ) -> OpenAITools:
     """Create a standard set of tools for the LLM."""
     tools = OpenAITools()
@@ -866,5 +952,9 @@ def create_default_tools(
         tools.insert(create_join_chat_tool(telegram))
     if get_config().can_leave_chats:
         tools.insert(create_leave_chat_tool(telegram))
+
+    # Flow-control tools (wait/pause — signal the LLM is done for this turn)
+    tools.insert(create_wait_tool())
+    tools.insert(create_pause_tool())
 
     return tools

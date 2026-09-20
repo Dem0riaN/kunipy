@@ -1,60 +1,91 @@
-"""Worker for kunipy.
+"""Refactored Worker for clean architecture.
 
-A worker pulls notifications from the queue and processes them using the LLM,
-running a full tool-calling loop (the model can call Telegram/diary/media
-tools, see the results, and call more tools, until it stops calling tools).
+Worker that processes notifications using dependency injection.
+Based on ТЗ-001 punkt 5 (clean architecture refactoring).
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+import src.tools as tools_module
 
 from .character import build_system_prompt
-from .config import get_config
+from .config import Config
 from .diary import Diary
-from .notification_manager import Notification, NotificationManager
+from .infrastructure.tui_streaming import TuiStreamingPrinter
+from .interfaces.worker import INotificationManager
+from .notification_manager import Notification
 from .openai_chat import Message, OpenAIChat
 from .telegram_client import TelegramClient
-from .tools import create_default_tools
-from .working_memory import get_working_memory
 
 logger = logging.getLogger(__name__)
 
-# Safety cap on how many times the model may chain tool calls for a single
-# incoming notification before we give up and just report what happened.
 MAX_TOOL_ITERATIONS = 6
 
 
 class Worker:
-    """A worker that processes notifications and generates responses."""
+    """Worker that processes notifications via DI.
+
+    Responsibilities:
+    - Pull notifications from queue
+    - Run LLM tool-calling loop
+    - Maintain per-chat conversation context
+    - Manage sleep/wake cycles
+    """
 
     def __init__(
         self,
         name: str,
-        app_base: Any,  # App instance (for callbacks)
-        telegram: Optional[TelegramClient],
-        openai: Optional[OpenAIChat],
-        diary: Optional[Diary],
-        notification_manager: NotificationManager,
+        openai: OpenAIChat,
+        notification_manager: INotificationManager,
+        telegram: TelegramClient | None,
+        diary: Diary | None,
+        config: Config,
+        working_memory_context: str | None = None,
+        memory_service=None,  # ТЗ-002: Memory service injection
+        diary_dump_service=None,  # Phase 3: Conversation→diary pipeline
+        diary_context_injector=None,  # Phase 4: Auto-RAG injection
+        working_memory_update_service=None,  # Autonomy: Working memory extraction
     ):
+        """Initialize worker with dependencies.
+
+        Args:
+            name: Worker identifier
+            openai: LLM client
+            notification_manager: Notification queue
+            telegram: Telegram client (optional)
+            diary: Diary for memory (optional)
+            config: Application configuration
+            working_memory_context: Pre-loaded working memory context (optional)
+            memory_service: Memory service for ТЗ-002 (optional)
+            diary_dump_service: Conversation→diary dump service (optional, Phase 3)
+            diary_context_injector: Auto-RAG diary injector (optional, Phase 4)
+            working_memory_update_service: Working memory update service (optional)
+        """
         self.name = name
-        self.app = app_base
-        self.telegram = telegram
         self.openai = openai
-        self.diary = diary
         self.notification_manager = notification_manager
+        self.telegram = telegram
+        self.diary = diary
+        self.config = config
+        self._working_memory_context = working_memory_context or ""
+        self.memory_service = memory_service  # ТЗ-002
+        self._diary_dump_service = diary_dump_service  # Phase 3
+        self._diary_context_injector = diary_context_injector  # Phase 4
+        self._working_memory_update_service = working_memory_update_service  # Autonomy
+
         self._running = False
-        self._task: Optional[asyncio.Task] = None
-        # Per-chat short-term conversation history so that unrelated chats
-        # don't bleed into each other's context.
-        self.temporary_context: Dict[int, List[Message]] = {}
         self._sleeping = False
         self._wake_event = asyncio.Event()
-        self.config = get_config()
+
+        # Per-chat conversation history
+        self.temporary_context: dict[int, list[Message]] = {}
+
+        # Track last working memory update time per chat
+        self._last_wm_update: dict[int, float] = {}
 
     async def run(self) -> None:
         """Main worker loop."""
@@ -66,65 +97,407 @@ class Worker:
                 # Get next notification (blocking)
                 notification = await self.notification_manager.get()
                 if notification is None:
-                    # Manager stopped
                     break
 
-                # Process the notification
+                # Process notification
                 await self._process_notification(notification)
 
-                # After processing, optionally go to sleep (idle)
+                # Extract chat_id for working memory update
+                chat_id = None
+                if notification.pin and notification.pin.startswith("chat_"):
+                    try:
+                        chat_id = int(notification.pin.split("_")[1])
+                    except (IndexError, ValueError):
+                        pass
+
+                # Update working memory after conversation session
+                if chat_id:
+                    await self._maybe_update_working_memory(chat_id)
+
+                # Auto-save to diary after session if enabled
+                if chat_id and self.config.worker_auto_save_after_session:
+                    await self._maybe_auto_save_diary(chat_id)
+
+                # Maybe go to sleep after processing
                 await self._maybe_sleep()
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.exception(f"Worker {self.name} error: {e}")
-                await asyncio.sleep(1)  # backoff
+            except Exception:
+                logger.exception(f"Worker {self.name} error")
+                await asyncio.sleep(1)
 
         logger.info(f"Worker {self.name} stopped")
 
     async def _process_notification(self, notification: Notification) -> None:
         """Process a single notification end-to-end."""
-        logger.debug(f"Worker {self.name} processing {notification._id}")
+        logger.info(f"Processing notification: {notification.message[:100]}...")
 
         # Extract chat_id from pin
         chat_id = None
-        if notification.pin.startswith("chat_"):
+        if notification.pin and notification.pin.startswith("chat_"):
             try:
                 chat_id = int(notification.pin.split("_")[1])
             except (IndexError, ValueError):
                 pass
 
         if chat_id is None:
-            logger.warning(f"Notification {notification._id} has invalid pin, skipping")
+            logger.warning(f"Notification has invalid pin: {notification.pin}")
             return
 
         try:
             final_text = await self._generate_response(notification, chat_id)
-        except Exception as e:
-            logger.exception(f"Worker {self.name} failed generating a response: {e}")
+        except Exception:
+            logger.exception(f"Worker {self.name} failed to generate response")
             return
 
-        # The LLM is expected to actually deliver its reply by calling the
-        # `send_telegram_message` tool during the loop below. If it finished
-        # without calling any tool at all but still produced text, treat that
-        # text as a plain reply so nothing is silently lost.
-        if final_text and self.telegram:
-            try:
-                from .tools import _simulate_typing
-                await _simulate_typing(self.telegram, chat_id, final_text)
-                await self.telegram.send_message(chat_id, final_text)
-                logger.info(f"Worker {self.name} sent fallback response to chat {chat_id}")
-            except Exception as e:
-                logger.error(f"Failed to send message: {e}")
+        # Log if LLM produced text but didn't call send_message tool
+        # According to system.md contract: internal thoughts (thought/emotion/intention)
+        # must NEVER be sent to real people via Telegram. Only #send_telegram_message
+        # tool calls should reach users.
+        if final_text:
+            logger.info(
+                f"Worker {self.name} generated text without tool calls, "
+                f"not sending to Telegram (contract: thoughts stay internal)"
+            )
 
-    def _log_assistant_turn(self, chat_id: int, content: str, tool_calls: Optional[List[Dict[str, Any]]]) -> None:
-        """Print the model's reasoning text and any tool calls it's about to
-        make, so what the bot is "thinking" and doing is visible in the
-        console/log instead of only the final delivered message."""
+    async def _generate_response(
+        self, notification: Notification, chat_id: int
+    ) -> str | None:
+        """Run LLM tool-calling loop.
+
+        Returns:
+            Leftover text if model finished without calling tools, else None
+        """
+        if not self.openai:
+            return None
+
+        chat = await self.telegram.get_chat(chat_id) if self.telegram else None
+        is_admin = chat_id == self.config.papik_chat_id
+
+        # Create user message (handle multimodal content for photos/stickers)
+        user_message_content = notification.message
+
+        # Check if notification has image media that should be included
+        if notification.metadata and notification.metadata.get("has_image_media"):
+            # Extract TelegramMessage from metadata if available
+            telegram_msg = notification.metadata.get("telegram_message")
+            if telegram_msg and telegram_msg.media:
+                media_type = telegram_msg.media.get("type")
+                if media_type in ("photo", "sticker"):
+                    # Try to create multimodal content
+                    try:
+                        from .application.media_service import MediaService
+                        from .openai_chat import create_multimodal_content
+
+                        media_service = MediaService(
+                            telegram_client=self.telegram,
+                            openai_client=self.openai,
+                            config=self.config
+                        )
+
+                        result = await media_service.get_image_bytes_and_mime(telegram_msg)
+                        if result:
+                            image_bytes, mime_type = result
+                            # Create multimodal content with text + image
+                            user_message_content = create_multimodal_content(
+                                text=notification.message,
+                                image_data=image_bytes,
+                                mime_type=mime_type
+                            )
+                            logger.info(f"Created multimodal content for {media_type}")
+                    except (ValueError, KeyError, TypeError, RuntimeError) as e:
+                        logger.warning(f"Failed to create multimodal content: {e}")
+                        # Fall back to text-only
+
+        # Maintain per-chat history
+        history = self.temporary_context.setdefault(chat_id, [])
+        history.append(Message(role="user", content=user_message_content))
+
+        system_prompt = await self._build_system_prompt(notification)
+        messages = list(history)
+        ever_called_tool = False
+
+        # Initialize TUI printer for this notification
+        tui_printer = TuiStreamingPrinter()
+
+        # Tool-calling loop
+        for iteration in range(MAX_TOOL_ITERATIONS):
+            # Rebuild tools with current history to get fresh recent_bot_messages
+            tools = None
+            tool_schemas = None
+            if self.telegram:
+                recent_bot_messages = [
+                    m.content for m in history
+                    if m.role == "assistant" and (m.content or "").strip()
+                ]
+                tools = tools_module.create_default_tools(
+                    telegram=self.telegram,
+                    diary=self.diary,
+                    openai=self.openai,
+                    current_chat=chat,
+                    is_admin=is_admin,
+                    recent_bot_messages=recent_bot_messages,
+                )
+                tool_schemas = tools.to_json_schemas()
+
+            # Add messages_epilogue.md to messages before sending to LLM
+            from .prompt_loader import build_messages_with_epilogue
+            messages_with_epilogue = build_messages_with_epilogue(
+                messages, config=self.config
+            )
+
+            # Phase 4: inject diary full-text into messages
+            if self._diary_context_injector and self.config.diary_auto_rag_enabled:
+                try:
+                    messages_with_epilogue = await self._diary_context_injector.inject_into_messages(
+                        messages_with_epilogue, notification.message
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to inject diary into messages: {e}")
+
+            response = await self.openai.chat(
+                messages=messages_with_epilogue,
+                system_prompt=system_prompt,
+                tools=tool_schemas,
+                temperature=0.7,
+                max_tokens=2000,
+            )
+
+            if not response.choices:
+                break
+
+            # Update TUI with response
+            tui_printer.update(response)
+
+            choice = response.choices[0]
+            message = choice.get("message", {})
+            content = message.get("content", "")
+            tool_calls = message.get("tool_calls", [])
+
+            # Log assistant turn
+            self._log_assistant_turn(chat_id, content, tool_calls)
+
+            # Add assistant message to history
+            history.append(Message(
+                role="assistant",
+                content=content,
+                tool_calls=tool_calls if tool_calls else None
+            ))
+            messages.append(Message(
+                role="assistant",
+                content=content,
+                tool_calls=tool_calls if tool_calls else None
+            ))
+
+            # Store assistant message to memory (ТЗ-002)
+            if self.memory_service and content:
+                try:
+                    await self.memory_service.store_message(
+                        user_id=str(chat_id),  # Use chat_id as fallback for bot messages
+                        chat_id=str(chat_id),
+                        channel="telegram",
+                        role="assistant",
+                        content=content,
+                        metadata={"has_tool_calls": bool(tool_calls)}
+                    )
+                    logger.debug("Stored assistant message to memory system")
+                except Exception as e:
+                    logger.warning(f"Failed to store assistant message to memory: {e}")
+
+            # Execute tools if called
+            if tool_calls:
+                ever_called_tool = True
+                tool_results = []
+                should_pause = False
+
+                for tc in tool_calls:
+                    tool_id = tc.get("id")
+                    function = tc.get("function", {})
+                    name = function.get("name")
+                    args_str = function.get("arguments", "{}")
+
+                    try:
+                        args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        result = await tools.call(name, args)
+                        result_str = str(result) if result is not None else ""
+                    except (ValueError, KeyError, TypeError, RuntimeError) as e:
+                        result_str = f"Error: {e}"
+                        logger.error(f"Tool {name} failed: {e}")
+
+                    tool_results.append(Message(
+                        role="tool",
+                        content=result_str,
+                        tool_call_id=tool_id
+                    ))
+
+                    # Detect wait/pause — signal that the LLM is done for this turn
+                    # (mirrors C++ kuni Worker.cpp pauseFlag logic)
+                    if name in tools_module._TERMINAL_TOOL_NAMES:
+                        should_pause = True
+
+                self._log_tool_results(chat_id, tool_calls, tool_results)
+
+                # Add tool results to history
+                history.extend(tool_results)
+                messages.extend(tool_results)
+
+                if should_pause:
+                    logger.debug(f"[chat_{chat_id}] wait/pause called — stopping turn")
+                    break
+
+                continue  # Next iteration
+
+            # No tool calls - model finished
+            break
+
+        # Finish TUI output
+        tui_printer.finish()
+
+        # Trim history if too long (Phase 3: dump to diary before trimming).
+        # maybe_dump() returns the (possibly trimmed) list; assign back into
+        # the SAME list object since `history` is self.temporary_context[chat_id].
+        if len(history) > 20:
+            if self._diary_dump_service:
+                trimmed = await self._diary_dump_service.maybe_dump(history, chat_id)
+                history[:] = trimmed
+                messages = list(history)
+            else:
+                history[:] = history[-15:]
+
+        # Return leftover text if no tools were ever called
+        if not ever_called_tool and messages and messages[-1].role == "assistant":
+            return messages[-1].content or None
+
+        return None
+
+    async def _build_system_prompt(self, notification: Notification) -> str:
+        """Build system prompt with working memory and diary auto-RAG context."""
+        diary_context = ""
+        if self._diary_context_injector and self.config.diary_auto_rag_enabled:
+            try:
+                diary_context = await self._diary_context_injector.inject_into_system_prompt(
+                    notification.message
+                )
+            except Exception as e:
+                logger.error(f"Failed to inject diary context into system prompt: {e}")
+
+        base_prompt = build_system_prompt(
+            config=self.config,
+            working_memory_text=self._working_memory_context,
+            diary_context=diary_context,
+        )
+
+        return base_prompt
+
+    async def _maybe_sleep(self) -> None:
+        """Sleep after processing if idle."""
+        if not self.config.worker_sleep_enabled:
+            return
+
+        # Check if random sleep is enabled and should trigger
+        should_sleep = False
+        if self.config.worker_random_sleep_enabled:
+            # 30% chance to sleep after message processing
+            if random.random() < 0.3:
+                should_sleep = True
+        else:
+            # Sleep on every idle timeout (original behavior)
+            should_sleep = True
+
+        if should_sleep:
+            self._sleeping = True
+            self._wake_event.clear()
+
+            logger.debug(f"Worker {self.name} going to sleep")
+
+            try:
+                await asyncio.wait_for(
+                    self._wake_event.wait(),
+                    timeout=self.config.worker_sleep_timeout
+                )
+            except TimeoutError:
+                pass
+
+            self._sleeping = False
+            logger.debug(f"Worker {self.name} woke up")
+
+    async def _maybe_update_working_memory(self, chat_id: int) -> None:
+        """Update working memory after conversation session ends.
+
+        Called after processing and before sleep to extract working memory
+        using LLM (promises, tasks, emotional state, etc).
+
+        Args:
+            chat_id: Chat identifier
+        """
+        if not self._working_memory_update_service:
+            return
+
+        messages = self.temporary_context.get(chat_id, [])
+        if not messages:
+            return
+
+        try:
+            # Extract user_id from chat_id (stub: use chat_id as user_id for now)
+            user_id = str(chat_id)
+
+            updated_context = await self._working_memory_update_service.update_after_session(
+                messages=messages,
+                user_id=user_id,
+                chat_id=str(chat_id),
+                channel="telegram",
+            )
+
+            if updated_context:
+                logger.info(f"Updated working memory for chat {chat_id}")
+        except Exception:
+            logger.exception(f"Failed to update working memory for chat {chat_id}")
+
+    async def _maybe_auto_save_diary(self, chat_id: int) -> None:
+        """Auto-save conversation to diary after session ends.
+
+        Called after processing and working memory update to preserve
+        conversation context as diary entries.
+
+        Args:
+            chat_id: Chat identifier
+        """
+        if not self._diary_dump_service:
+            return
+
+        messages = self.temporary_context.get(chat_id, [])
+        if not messages:
+            return
+
+        try:
+            # Use diary dump service to summarize and save
+            entries = await self._diary_dump_service._summarize_for_diary(messages)
+            for entry_text in entries:
+                await self.diary.add_entry(
+                    text=entry_text,
+                    confidence=0.7,
+                    visibility="chat",
+                    chat_id=str(chat_id),
+                    source_channel="telegram",
+                )
+            logger.info(f"Auto-saved {len(entries)} diary entries for chat {chat_id}")
+        except Exception:
+            logger.exception(f"Failed to auto-save diary for chat {chat_id}")
+
+    def wake_up(self) -> None:
+        """Wake up this worker if sleeping."""
+        if self._sleeping:
+            self._wake_event.set()
+
+    def _log_assistant_turn(
+        self, chat_id: int, content: str, tool_calls: list[dict[str, Any]] | None
+    ) -> None:
+        """Log assistant's thinking and tool calls."""
         prefix = f"[chat_{chat_id}]"
         if content and content.strip():
-            logger.info(f"{prefix} \u25b8 thinking: {content.strip()}")
+            logger.info(f"{prefix} ▸ thinking: {content.strip()}")
+
         for tc in (tool_calls or []):
             fn = tc.get("function", {}) or {}
             name = fn.get("name", "?")
@@ -134,208 +507,24 @@ class Worker:
                 args_str = json.dumps(args, ensure_ascii=False)
             except (json.JSONDecodeError, TypeError):
                 args_str = str(args_raw)
-            logger.info(f"{prefix} \u2699 {name}({args_str})")
+            logger.info(f"{prefix} ⚙ {name}({args_str})")
 
     def _log_tool_results(
         self,
         chat_id: int,
-        tool_calls: Optional[List[Dict[str, Any]]],
-        tool_results: List[Message],
+        tool_calls: list[dict[str, Any]] | None,
+        tool_results: list[Message],
     ) -> None:
-        """Print each tool's result next to the call that produced it."""
+        """Log tool execution results."""
         prefix = f"[chat_{chat_id}]"
-        names_by_id = {tc.get("id"): (tc.get("function", {}) or {}).get("name", "?") for tc in (tool_calls or [])}
+        names_by_id = {
+            tc.get("id"): (tc.get("function", {}) or {}).get("name", "?")
+            for tc in (tool_calls or [])
+        }
+
         for result in tool_results:
             name = names_by_id.get(result.tool_call_id, "?")
             text = (result.content or "").strip()
             if len(text) > 300:
-                text = text[:300] + "\u2026"
-            logger.info(f"{prefix} \u2190 {name}: {text}")
-
-    async def _generate_response(self, notification: Notification, chat_id: int) -> Optional[str]:
-        """Run the LLM tool-calling loop for one notification.
-
-        Returns leftover assistant text if the model finished without ever
-        calling a tool (fallback plain reply), otherwise None (the reply was
-        already delivered via the send_telegram_message tool).
-        """
-        if not self.openai:
-            logger.warning("No OpenAI client, skipping response generation")
-            return None
-
-        chat = await self.telegram.get_chat(chat_id) if self.telegram else None
-        is_admin = chat_id == self.config.papik_chat_id
-
-        history = self.temporary_context.setdefault(chat_id, [])
-        history.append(Message(role="user", content=notification.message))
-
-        tools = None
-        tool_schemas = None
-        if self.telegram:
-            recent_bot_messages = [
-                m.content for m in history if m.role == "assistant" and (m.content or "").strip()
-            ]
-            tools = create_default_tools(
-                telegram=self.telegram,
-                diary=self.diary,
-                openai=self.openai,
-                current_chat=chat,
-                is_admin=is_admin,
-                recent_bot_messages=recent_bot_messages,
-            )
-            tool_schemas = tools.to_json_schemas()
-
-        system_prompt = await self._build_system_prompt(notification)
-
-        messages = list(history)
-        ever_called_tool = False
-
-        for _ in range(MAX_TOOL_ITERATIONS):
-            from .metrics import breadcrumbs
-            with breadcrumbs(chat=f"chat_{chat_id}", function="worker.generate_response"):
-                response = await self.openai.chat(
-                    messages=messages,
-                    system_prompt=system_prompt,
-                    tools=tool_schemas,
-                )
-            if not response.choices:
-                break
-
-            choice_message = response.choices[0].get("message", {})
-            content = choice_message.get("content") or ""
-            tool_calls = choice_message.get("tool_calls") or None
-
-            self._log_assistant_turn(chat_id, content, tool_calls)
-
-            messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
-
-            if not tool_calls:
-                # Model is done. Persist history and hand back any leftover
-                # text as a fallback plain reply.
-                await self._finish_turn(chat_id, messages)
-                return content.strip() if (content and not ever_called_tool) else None
-
-            ever_called_tool = True
-            if tools is not None:
-                tool_results = await tools.handle_tool_calls(tool_calls, messages)
-                self._log_tool_results(chat_id, tool_calls, tool_results)
-                messages.extend(tool_results)
-            else:
-                # No telegram/tool support available; can't fulfil the call.
-                for tc in tool_calls:
-                    messages.append(Message(
-                        role="tool",
-                        content="Error: tools are unavailable right now.",
-                        tool_call_id=tc.get("id"),
-                    ))
-
-        logger.warning(f"Worker {self.name} hit MAX_TOOL_ITERATIONS for chat {chat_id}")
-        await self._finish_turn(chat_id, messages)
-        return None
-
-    async def _finish_turn(self, chat_id: int, messages: List[Message]) -> None:
-        """Persist the chat's short-term history, dumping it to the diary and
-        starting fresh once it gets too large (mirrors the original kuni's
-        `DIARY_TOKEN_COUNT_TRIGGER` context-reset behavior)."""
-        # Rough token estimate (~4 chars/token); good enough for a soft cap,
-        # avoids pulling in a real tokenizer just for this check.
-        approx_tokens = sum(len(m.content or "") for m in messages) // 4
-
-        if approx_tokens >= self.config.diary_token_count_trigger and hasattr(self.app, "diary_dump_messages"):
-            logger.info(
-                f"Worker {self.name}: chat {chat_id} reached ~{approx_tokens} tokens, "
-                f"dumping context to diary and starting fresh"
-            )
-            try:
-                await self.app.diary_dump_messages(messages)
-            except Exception as e:
-                logger.error(f"Failed to dump context to diary: {e}")
-            self.temporary_context[chat_id] = []
-        else:
-            self.temporary_context[chat_id] = self._trim_history(messages)
-
-    def _trim_history(self, messages: List[Message]) -> List[Message]:
-        """Keep the most recent messages whose combined content length fits
-        under `config.chat_max_history_length` characters (0 = unlimited)."""
-        limit = self.config.chat_max_history_length
-        if not limit:
-            return messages
-
-        kept: List[Message] = []
-        total = 0
-        for m in reversed(messages):
-            length = len(m.content or "")
-            if kept and total + length > limit:
-                break
-            kept.append(m)
-            total += length
-        kept.reverse()
-        return kept
-
-    async def _build_system_prompt(self, notification: Notification) -> str:
-        """Build the full system prompt: persona + working memory + diary recall."""
-        working_memory_text = ""
-        wm = get_working_memory()
-        stored = wm.get("things_to_remember")
-        if stored:
-            working_memory_text = str(stored)
-
-        diary_context = ""
-        if self.diary and self.openai and notification.message:
-            try:
-                query_vector = await self.openai.embedding(notification.message)
-                related = await self.diary.query(query_vector, max_entries=5)
-                if related:
-                    diary_context = "\n".join(f"- {entry.body.strip()}" for entry, _score in related if entry.body.strip())
-                    max_len = self.config.diary_injection_max_length
-                    if max_len and len(diary_context) > max_len:
-                        diary_context = diary_context[:max_len].rsplit("\n", 1)[0] + "\n- [...]"
-            except Exception as e:
-                logger.warning(f"Failed to fetch related diary entries: {e}")
-
-        prompt = build_system_prompt(
-            self.config,
-            working_memory_text=working_memory_text,
-            diary_context=diary_context,
-        )
-
-        # Occasionally nudge the model to remember it must call
-        # `send_telegram_message` to actually deliver its reply -- plain
-        # text finishing without any tool call is silently treated as a
-        # fallback and easy for smaller models to "forget" over a long chat.
-        if random.random() < self.config.tool_reminder_probability:
-            prompt += (
-                "\n\n# Reminder\nRemember to actually call `send_telegram_message` "
-                "to send your reply -- text you return without calling a tool is "
-                "never shown to the user."
-            )
-
-        return prompt
-
-    async def _maybe_sleep(self) -> None:
-        """Randomly go to sleep if configured."""
-        if not self.config.randomly_go_sleep:
-            return
-        # Sleep with low probability (e.g., 5% chance after each notification)
-        if random.random() < 0.05:
-            sleep_time = random.randint(10, 60)  # seconds
-            logger.info(f"Worker {self.name} sleeping for {sleep_time}s")
-            self._sleeping = True
-            try:
-                await asyncio.sleep(sleep_time)
-            except asyncio.CancelledError:
-                pass
-            self._sleeping = False
-
-    def wake_up(self) -> None:
-        """Wake up the worker if sleeping."""
-        if self._sleeping:
-            logger.info(f"Waking up worker {self.name}")
-            self._wake_event.set()
-            # We can't easily interrupt asyncio.sleep, so we rely on the loop to check.
-
-    def stop(self) -> None:
-        """Stop the worker."""
-        self._running = False
-        if self._task:
-            self._task.cancel()
+                text = text[:300] + "…"
+            logger.info(f"{prefix} ← {name}: {text}")

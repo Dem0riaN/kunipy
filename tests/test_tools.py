@@ -9,12 +9,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import src.config as cfgmod  # noqa: E402
-from src.config import Config  # noqa: E402
 import logging
 
-from src.telegram_client import TelegramChat  # noqa: E402
-from src.tools import (  # noqa: E402
+import src.config as cfgmod
+from src.config import Config
+from src.telegram_client import TelegramChat
+from src.tools import (
     ToolContext,
     _check_anti_repeat,
     create_join_chat_tool,

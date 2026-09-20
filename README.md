@@ -1,12 +1,17 @@
-# kunipy
+# Kunipy - AI Character with Long-term Memory
 
 Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI with Telegram interface, built with clean architecture and dependency injection.
 
-**This information is applicable to the DEV branch.**
+## Features
 
-## Status
+### Core Capabilities
+- **Multi-channel Communication**: Telegram, desktop client, voice interactions
+- **Hybrid Memory System**: SQLite (WAL mode) + ChromaDB (HNSW vector search) for long-term memory
+- **Automatic Memory Formation**: LLM-based extraction of facts, events, thoughts from conversations
+- **Cross-channel Context**: Desktop owner's memories shared across all channels
+- **Working Memory**: In-memory short-term context with `.md` file persistence (promises, plans, pending questions)
+- **Conversation History**: Full message storage with provenance tracking in SQLite
 
-### Implemented
 
 - ✅ **Clean Architecture** — Application/Domain/Interfaces/Infrastructure layers
 - ✅ **Dependency Injection** — Explicit constructor injection, composition root pattern
@@ -59,7 +64,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-## Configuration
+### Configuration
 
 **First run generates `config.toml`:**
 
@@ -114,6 +119,12 @@ See `config.example.toml` for full reference with bilingual (RU/EN) comments.
 ## Running
 
 ```bash
+# Activate virtual environment
+source .venv/bin/activate  # Linux/macOS
+# or
+.venv\Scripts\activate  # Windows
+
+# Run application
 python run.py
 ```
 
@@ -294,4 +305,22 @@ kunipy-main/
 
 ## License
 
-MIT
+See LICENSE file.
+
+## Contributing
+
+1. Follow existing code style (ruff formatting)
+2. Add tests for new features
+3. Update documentation
+4. Keep memory system backward-compatible
+
+## Support
+
+- Issues: [GitHub Issues](https://github.com/your-repo/kunipy/issues)
+- Documentation: See `docs/` directory
+- ТЗ-002 Spec: See `TZ-002.md`
+
+---
+
+**Current Version:** 0.5.0 (Hybrid Memory + Phase 2/4: Sleep Consolidation + Auto-RAG)  
+**Last Updated:** 2026-09-13

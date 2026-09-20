@@ -8,8 +8,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,10 @@ class Notification:
     priority: int = 0  # higher = more urgent
     message: str = ""
     pin: str = ""  # grouping key (e.g., chat_id)
-    actions: List[Dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __lt__(self, other: "Notification") -> bool:
+    def __lt__(self, other: Notification) -> bool:
         # For heapq: lower priority number = higher urgency (we invert)
         return self.priority > other.priority
 
@@ -39,9 +41,9 @@ class NotificationManager:
     def __init__(self, max_queue_size: int = 1000):
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue(max_queue_size)
         self._running = False
-        self._handlers: List[Callable[[Notification], None]] = []
+        self._handlers: list[Callable[[Notification], None]] = []
         self._worker_count = 0
-        self._tasks: List[asyncio.Task] = []
+        self._tasks: list[asyncio.Task] = []
 
     def register_handler(self, handler: Callable[[Notification], None]) -> None:
         """Register a handler that will be called when a notification is popped."""
@@ -54,13 +56,16 @@ class NotificationManager:
         logger.info(f"Notification manager started with {worker_count} workers")
         # Workers are started externally; we just keep the queue.
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the notification manager."""
         self._running = False
         # Cancel worker tasks if any
         for task in self._tasks:
             if not task.done():
                 task.cancel()
+        # Wait for cancellation
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         logger.info("Notification manager stopped")
 
@@ -73,11 +78,38 @@ class NotificationManager:
             # PriorityQueue expects (priority, item) where priority is lower = higher
             # We invert priority so higher number = higher urgency
             self._queue.put_nowait((-notification.priority, notification))
-            logger.debug(f"Added notification {notification._id} with priority {notification.priority}")
+            logger.info(f"Added notification {notification._id} with priority {notification.priority}, queue_size={self._queue.qsize()}")
         except asyncio.QueueFull:
             logger.warning("Notification queue full, dropping notification")
 
-    async def get(self) -> Optional[Notification]:
+    async def pass_notification(
+        self,
+        message: str,
+        priority: int = 0,
+        pin: str = "",
+        metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Pass a notification to the queue.
+
+        This is the main entry point used by telegram_handler and other components.
+
+        Args:
+            message: Notification message text
+            priority: Priority level (higher = more urgent)
+            pin: Grouping key (e.g., chat_id)
+            metadata: Additional metadata
+        """
+        notification = Notification(
+            message=message,
+            priority=priority,
+            pin=pin,
+        )
+        if metadata:
+            notification.metadata = metadata
+        self.add_notification(notification)
+        logger.info(f"Passed notification to queue: pin={pin}, priority={priority}")
+
+    async def get(self) -> Notification | None:
         """Get the next notification from the queue (blocking)."""
         if not self._running:
             return None
@@ -89,12 +121,12 @@ class NotificationManager:
                     result = handler(notification)
                     if asyncio.iscoroutine(result):
                         await result
-                except Exception as e:
+                except (ValueError, KeyError, TypeError, RuntimeError) as e:
                     logger.error(f"Error in notification handler: {e}")
             return notification
         except asyncio.CancelledError:
             return None
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(f"Error getting notification: {e}")
             return None
 
@@ -104,7 +136,7 @@ class NotificationManager:
 
 
 # Singleton instance
-_manager: Optional[NotificationManager] = None
+_manager: NotificationManager | None = None
 
 
 def get_notification_manager() -> NotificationManager:

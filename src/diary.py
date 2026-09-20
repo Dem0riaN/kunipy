@@ -1,25 +1,28 @@
-"""Diary memory system for kunipy.
+"""Diary memory system with dependency injection.
 
-Stores entries as markdown files with YAML metadata, provides RAG search via embeddings,
-and performs sleep consolidation (memory compression).
+Phase 1: Delegates to DiaryFileStore and DiaryVectorStore when available,
+falls back to legacy file-only behavior for backward compatibility.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import random
-import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .config import get_config
-from .openai_chat import OpenAIChat, Message
+from .config import Config
+from .openai_chat import OpenAIChat
+
+if TYPE_CHECKING:
+    from .infrastructure.memory.diary_file_store import DiaryFileStore
+    from .infrastructure.memory.diary_vector_store import DiaryVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +30,14 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DiaryEntry:
     """A single diary entry with metadata."""
-    id: str  # filename without .md
-    text: str = ""  # full raw content (metadata + body)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    body: str = ""  # freeform text without metadata block
+    id: str
+    text: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    body: str = ""
 
     @property
-    def embedding(self) -> Optional[np.ndarray]:
-        """Get the embedding vector from metadata."""
+    def embedding(self) -> np.ndarray | None:
+        """Get embedding vector from metadata."""
         emb = self.metadata.get("embedding")
         if emb is not None:
             return np.array(emb, dtype=np.float64)
@@ -48,181 +51,345 @@ class DiaryEntry:
     def confidence(self) -> float:
         return self.metadata.get("confidence", 0.0)
 
-    @confidence.setter
-    def confidence(self, value: float) -> None:
-        self.metadata["confidence"] = value
+    @staticmethod
+    def from_file_content(file_id: str, content: str) -> DiaryEntry:
+        """Parse diary entry from file content.
 
-    @property
-    def score(self) -> float:
-        return self.metadata.get("score", 0.0)
-
-    @score.setter
-    def score(self, value: float) -> None:
-        self.metadata["score"] = value
-
-    @property
-    def last_used(self) -> str:
-        return self.metadata.get("last_used", "never")
-
-    @last_used.setter
-    def last_used(self, value: str) -> None:
-        self.metadata["last_used"] = value
-
-    @property
-    def usage_count(self) -> int:
-        return self.metadata.get("usage_count", 0)
-
-    @usage_count.setter
-    def usage_count(self, value: int) -> None:
-        self.metadata["usage_count"] = value
-
-    def increment_usage(self) -> None:
-        self.usage_count += 1
-        self.last_used = datetime.now().isoformat()
-
-    def to_file_content(self) -> str:
-        """Serialize entry to markdown with metadata block."""
-        # Build metadata JSON
-        meta = self.metadata.copy()
-        # Remove embedding from metadata block to keep files readable
-        # (it's still stored, but we can omit it for readability)
-        # Actually we keep it but it's large, but we want to preserve it
-        meta_for_file = {k: v for k, v in meta.items() if k != "embedding"}
-        # Store embedding separately as a compact representation? We'll keep it.
-        meta_for_file = meta.copy()
-        meta_json = json.dumps(meta_for_file, indent=2, ensure_ascii=False)
-        return f"---\n{meta_json}\n---\n\n{self.body}"
-
-    @classmethod
-    def from_file_content(cls, file_id: str, content: str) -> DiaryEntry:
-        """Parse markdown file content into DiaryEntry."""
-        metadata = {}
-        body = content
-        # Try to extract YAML/JSON metadata block between --- delimiters
-        match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)", content, re.DOTALL)
-        if match:
-            meta_str = match.group(1)
-            body = match.group(2)
-            try:
-                metadata = json.loads(meta_str)
-            except json.JSONDecodeError:
-                # Try to handle as YAML? For now just ignore
-                pass
-        return cls(
-            id=file_id,
-            text=content,
-            metadata=metadata,
-            body=body.strip()
-        )
+        Delegates to DiaryFileStore.parse_file_content() which handles both
+        the real C++ format (--- JSON front matter) and legacy kunipy format,
+        plus normalizes metadata keys and derives created_at (замечание 3).
+        """
+        from .infrastructure.memory.diary_file_store import DiaryFileStore
+        return DiaryFileStore.parse_file_content(file_id, content)
 
 
 class Diary:
-    """Diary memory system with RAG and sleep consolidation."""
+    """Diary memory system with explicit config dependency.
+
+    Phase 1: Accepts optional DiaryFileStore and DiaryVectorStore.
+    When both are provided, all I/O goes through them (ChromaDB + C++ format files).
+    Without them, falls back to legacy file-only behavior.
+    """
 
     def __init__(
         self,
         diary_dir: str | Path,
-        openai: Optional[OpenAIChat] = None,
-        embedding_model: Optional[str] = None,
+        openai_chat: OpenAIChat,
+        config: Config,
+        embedding_model: str | None = None,
+        file_store: DiaryFileStore | None = None,
+        vector_store: DiaryVectorStore | None = None,
     ):
+        """Initialize diary with dependencies.
+
+        Args:
+            diary_dir: Directory for diary entries
+            openai_chat: OpenAI client for embeddings
+            config: Application configuration
+            embedding_model: Override embedding model (optional)
+            file_store: File I/O handler (Phase 1, optional)
+            vector_store: ChromaDB store (Phase 1, optional)
+        """
         self.diary_dir = Path(diary_dir)
         self.diary_dir.mkdir(parents=True, exist_ok=True)
-        self.openai = openai or OpenAIChat()
-        self.embedding_model = embedding_model
-        self._cache: Optional[Dict[str, DiaryEntry]] = None
+        self.openai = openai_chat
+        self.config = config
+        self.embedding_model = embedding_model or config.embedding.model
+        self._cache: dict[str, DiaryEntry] | None = None
         self._lock = asyncio.Lock()
+        self._last_entry_id: str | None = None  # Prevent duplicate IDs
+        self._entry_counter: int = 0  # Monotonic counter for same-second entries
 
-    async def _load_cache(self) -> Dict[str, DiaryEntry]:
+        # Phase 1: stores (optional — backward compatible)
+        self._file_store = file_store
+        self._vector_store = vector_store
+
+        # Phase 2: consolidation service (set via setter)
+        self._consolidation_service: Any = None
+
+    async def _load_cache(self) -> dict[str, DiaryEntry]:
         """Lazy load all diary entries into memory."""
         if self._cache is not None:
             return self._cache
+
         async with self._lock:
             if self._cache is not None:
                 return self._cache
-            cache = {}
-            for file_path in self.diary_dir.glob("*.md"):
-                file_id = file_path.stem
-                try:
-                    content = file_path.read_text(encoding="utf-8")
-                    entry = DiaryEntry.from_file_content(file_id, content)
-                    cache[file_id] = entry
-                except Exception as e:
-                    logger.warning(f"Failed to load diary entry {file_path}: {e}")
+
+            if self._file_store:
+                # Phase 1: delegate to DiaryFileStore
+                entries = self._file_store.load_all()
+                cache = {e.id: e for e in entries}
+            else:
+                # Legacy fallback: read .md files directly
+                cache = {}
+                for file_path in self.diary_dir.glob("*.md"):
+                    file_id = file_path.stem
+                    try:
+                        content = file_path.read_text(encoding="utf-8")
+                        entry = DiaryEntry.from_file_content(file_id, content)
+                        cache[file_id] = entry
+                    except (ValueError, KeyError, TypeError, OSError) as e:
+                        logger.error(f"Failed to load diary entry {file_id}: {e}")
+
             self._cache = cache
-            return self._cache
-
-    async def save(self, entry: DiaryEntry) -> None:
-        """Save a diary entry to disk and update cache."""
-        cache = await self._load_cache()
-        file_path = self.diary_dir / f"{entry.id}.md"
-        content = entry.to_file_content()
-        file_path.write_text(content, encoding="utf-8")
-        cache[entry.id] = entry
-        logger.debug(f"Saved diary entry {entry.id}")
-
-    async def delete(self, entry_id: str) -> None:
-        """Delete a diary entry from disk and cache."""
-        cache = await self._load_cache()
-        file_path = self.diary_dir / f"{entry_id}.md"
-        if file_path.exists():
-            file_path.unlink()
-        if entry_id in cache:
-            del cache[entry_id]
-        logger.debug(f"Deleted diary entry {entry_id}")
-
-    async def get_all(self) -> List[DiaryEntry]:
-        """Get all diary entries, newest first."""
-        cache = await self._load_cache()
-        entries = list(cache.values())
-        # Sort by ID descending (assuming IDs are timestamps or incrementing)
-        entries.sort(key=lambda e: e.id, reverse=True)
-        return entries
-
-    async def get(self, entry_id: str) -> Optional[DiaryEntry]:
-        """Get a single diary entry by ID."""
-        cache = await self._load_cache()
-        return cache.get(entry_id)
+            logger.info(f"Loaded {len(cache)} diary entries")
+            return cache
 
     async def query(
         self,
         query_vector: np.ndarray,
-        max_entries: int = 10,
+        max_entries: int = 5,
         confidence_factor: float = 0.01,
-        min_relatedness: Optional[float] = None,
-        filter_fn: Optional[Callable[[DiaryEntry], bool]] = None,
-    ) -> List[tuple[DiaryEntry, float]]:
-        """Query diary entries by embedding similarity."""
-        config = get_config()
-        if min_relatedness is None:
-            min_relatedness = config.diary_min_relatedness
+        min_relatedness: float | None = None,
+        filter_fn: Callable[[DiaryEntry], bool] | None = None,
+    ) -> list[tuple[DiaryEntry, float]]:
+        """Query diary entries by embedding similarity.
 
+        Phase 1: Uses ChromaDB when available, falls back to numpy scan.
+        Updates usage stats (score, lastUsed, usageCount) in-place.
+        """
+        if min_relatedness is None:
+            min_relatedness = self.config.diary_min_relatedness
+
+        if self._vector_store:
+            return await self._query_chromadb(
+                query_vector, max_entries, confidence_factor,
+                min_relatedness, filter_fn,
+            )
+
+        # Legacy fallback: in-memory numpy scan
+        return await self._query_numpy(
+            query_vector, max_entries, confidence_factor,
+            min_relatedness, filter_fn,
+        )
+
+    async def _query_chromadb(
+        self,
+        query_vector: np.ndarray,
+        max_entries: int,
+        confidence_factor: float,
+        min_relatedness: float,
+        filter_fn: Callable[[DiaryEntry], bool] | None,
+    ) -> list[tuple[DiaryEntry, float]]:
+        """Query via ChromaDB vector store."""
+        assert self._vector_store is not None
+
+        # Fetch more results than needed to allow for filtering
+        raw = await self._vector_store.query(
+            query_embedding=query_vector.tolist(),
+            n_results=max_entries * 3,  # oversampling for filter_fn
+        )
+
+        results: list[tuple[DiaryEntry, float]] = []
+        for hit in raw:
+            entry_id = hit["id"]
+            metadata = hit.get("metadata", {})
+            body = hit.get("document", "")
+            embedding = hit.get("embedding")
+            distance = hit.get("distance", 0.0)
+
+            # Reconstruct DiaryEntry
+            if embedding is not None:
+                metadata["embedding"] = embedding
+
+            entry = DiaryEntry(
+                id=entry_id,
+                body=body,
+                metadata=metadata,
+            )
+
+            # Apply optional filter
+            if filter_fn and not filter_fn(entry):
+                continue
+
+            # Convert ChromaDB cosine distance to similarity score
+            # ChromaDB cosine space: distance = 1 - cosine_similarity
+            similarity = 1.0 - distance
+            normalized = (similarity + 1.0) / 2.0
+            conf = float(metadata.get("confidence", 0.0))
+            final_score = normalized + conf * confidence_factor
+            final_score = max(0.0, min(1.0, final_score))
+
+            if final_score >= min_relatedness:
+                results.append((entry, final_score))
+
+                # Update usage stats in-place (замечание: original behavior)
+                self._update_usage_stats(entry, final_score)
+                await self._persist_usage_stats(entry)
+
+            if len(results) >= max_entries:
+                break
+
+        results.sort(key=lambda x: x[1], reverse=True)
+
+        # Update cache
+        if self._cache is not None:
+            for entry, _ in results:
+                self._cache[entry.id] = entry
+
+        return results[:max_entries]
+
+    async def _query_numpy(
+        self,
+        query_vector: np.ndarray,
+        max_entries: int,
+        confidence_factor: float,
+        min_relatedness: float,
+        filter_fn: Callable[[DiaryEntry], bool] | None,
+    ) -> list[tuple[DiaryEntry, float]]:
+        """Legacy fallback: numpy cosine similarity scan."""
         cache = await self._load_cache()
-        results = []
+        results: list[tuple[DiaryEntry, float]] = []
 
         for entry in cache.values():
             if filter_fn and not filter_fn(entry):
                 continue
+
             # Get or compute embedding
             embedding = entry.embedding
             if embedding is None:
-                # Generate embedding on the fly
                 embedding = await self._get_embedding(entry.body)
                 entry.embedding = embedding
                 await self.save(entry)
+
             # Compute cosine similarity
             similarity = self._cosine_similarity(query_vector, embedding)
-            # Normalize to [0, 1]
             normalized = (similarity + 1.0) / 2.0
-            # Adjust with confidence
             final_score = normalized + entry.confidence * confidence_factor
-            # Clamp to [0, 1]
             final_score = max(0.0, min(1.0, final_score))
+
             if final_score >= min_relatedness:
                 results.append((entry, final_score))
 
-        # Sort by score descending and truncate
+                # Update usage stats
+                self._update_usage_stats(entry, final_score)
+                await self._persist_usage_stats(entry)
+
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:max_entries]
+
+    def _update_usage_stats(self, entry: DiaryEntry, score: float) -> None:
+        """Update usage stats in-place (matches original C++ behavior).
+
+        Mutates: score, usageCount, lastUsed.
+        """
+        entry.metadata["score"] = score
+        entry.metadata["usageCount"] = entry.metadata.get("usageCount", 0) + 1
+        entry.metadata["lastUsed"] = datetime.now(self.config.timezone_info).isoformat()
+
+    async def _persist_usage_stats(self, entry: DiaryEntry) -> None:
+        """Persist updated usage stats to stores."""
+        if self._vector_store:
+            embedding = entry.embedding
+            if embedding is not None:
+                await self._vector_store.add(
+                    entry_id=entry.id,
+                    embedding=embedding.tolist(),
+                    body=entry.body,
+                    metadata={k: v for k, v in entry.metadata.items() if k != "embedding"},
+                )
+        elif self._file_store:
+            self._file_store.save(entry)
+
+    async def add_entry(
+        self,
+        text: str,
+        confidence: float = 0.0,
+        *,
+        visibility: str = "chat",
+        user_id: str = "",
+        chat_id: str = "",
+        source_channel: str = "",
+        kind: str = "other",
+        importance: float = 0.5,
+        tags: str = "",
+    ) -> str:
+        """Add a new diary entry with optional embedding.
+
+        Phase 1: ID = str(int(time.time())) — Unix timestamp, NOT LLM time (замечание 3).
+        Plagiarism check via ChromaDB when available.
+        """
+        threshold = self.config.diary_plagiarism_threshold
+
+        # Generate embedding
+        embedding = await self._get_embedding(text)
+
+        # Plagiarism check
+        if confidence < 0.5:
+            existing = await self.query(embedding, max_entries=1, min_relatedness=threshold)
+            if existing:
+                logger.info(f"Skipping duplicate diary entry (similarity {existing[0][1]:.3f})")
+                return existing[0][0].id
+
+        # Create new entry with Unix timestamp ID (замечание 3)
+        # Ensure uniqueness: when called rapidly (e.g. shutdown dump writes
+        # multiple entries in the same second), append a monotonic counter
+        # to avoid ID collisions that would silently overwrite via upsert.
+        now_ts = int(time.time())
+        base_id = str(now_ts)
+        if base_id == self._last_entry_id:
+            self._entry_counter += 1
+            entry_id = f"{base_id}_{self._entry_counter}"
+        else:
+            self._last_entry_id = base_id
+            self._entry_counter = 0
+            entry_id = base_id
+        entry = DiaryEntry(
+            id=entry_id,
+            body=text,
+            metadata={
+                "score": 0.0,
+                "confidence": confidence,
+                "lastUsed": "never",
+                "usageCount": 0,
+                "importance": importance,
+                "kind": kind,
+                "tags": tags,
+                "visibility": visibility,
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "sourceChannel": source_channel,
+                "created_at": now_ts,
+            },
+        )
+        entry.embedding = embedding
+
+        await self.save(entry)
+        logger.info(f"Added diary entry {entry_id}")
+        return entry_id
+
+    async def save(self, entry: DiaryEntry) -> None:
+        """Save diary entry to disk and/or ChromaDB.
+
+        Phase 1: Delegates to stores when available, legacy fallback otherwise.
+        """
+        # Save to ChromaDB
+        if self._vector_store:
+            embedding = entry.embedding
+            if embedding is not None:
+                # Metadata without embedding (ChromaDB stores embedding separately)
+                meta = {k: v for k, v in entry.metadata.items() if k != "embedding"}
+                await self._vector_store.add(
+                    entry_id=entry.id,
+                    embedding=embedding.tolist(),
+                    body=entry.body,
+                    metadata=meta,
+                )
+
+        # Save to file
+        if self._file_store:
+            self._file_store.save(entry)
+        else:
+            # Legacy fallback: write .md file directly
+            import json
+            file_path = self.diary_dir / f"{entry.id}.md"
+            content = f"```json\n{json.dumps(entry.metadata, indent=2)}\n```\n\n{entry.body}"
+            file_path.write_text(content, encoding="utf-8")
+
+        # Update cache
+        if self._cache is not None:
+            self._cache[entry.id] = entry
 
     async def _get_embedding(self, text: str) -> np.ndarray:
         """Get embedding vector for text."""
@@ -243,185 +410,250 @@ class Diary:
             return 0.0
         return float(dot / (norm_a * norm_b))
 
-    async def sleep_consolidation(
-        self,
-        max_sleep_time: int = 6 * 3600,  # 6 hours in seconds
-        recent_bias: float = 0.8,
-    ) -> None:
-        """Simulate sleep: consolidate and compress diary entries."""
-        logger.info("Starting sleep consolidation...")
-        cache = await self._load_cache()
-        if not cache:
-            logger.info("Diary is empty, skipping sleep")
-            return
+    # ── Phase 1: Legacy Migration ──────────────────────────────────────────
 
-        entries = list(cache.values())
-        entries.sort(key=lambda e: e.id, reverse=True)  # newest first
+    async def _migrate_legacy_entries(self) -> int:
+        """Migrate legacy .md diary entries to ChromaDB.
 
-        start_time = datetime.now()
-        elapsed = timedelta(0)
-        processed_ids: Set[str] = set()
+        Замечания 2, 3, 5:
+        - Parses REAL C++ format (--- JSON front matter, camelCase metadata)
+        - Preserves ALL usage stats (score, usageCount, lastUsed, confidence)
+        - created_at = int(filename stem) for Unix timestamp ID (замечание 3)
+        - visibility = "global" for all old entries (замечание 5, public by default)
+        - Deletes .md file after successful ChromaDB migration (замечание 2)
+        - Embedding from source JSON used if available; otherwise generated new
 
-        while elapsed.total_seconds() < max_sleep_time and entries:
-            # Select target entry
-            if random.random() < recent_bias:
-                # Pick the most recent entry (first in list)
-                target = entries.pop(0)
-            else:
-                # Pick random entry
-                idx = random.randint(0, len(entries) - 1)
-                target = entries.pop(idx)
+        Returns:
+            Number of entries migrated
+        """
+        if not self._file_store or not self._vector_store:
+            logger.info("Migration skipped: stores not configured")
+            return 0
 
-            if target.id in processed_ids:
-                continue
+        # Per-entry migration: ChromaDB may already hold some entries (e.g.
+        # created live by kunipy before the legacy .md files were copied in),
+        # so a non-empty store must not skip the whole migration — otherwise
+        # the migrated .md files stay invisible to RAG/consolidation.
+        all_file_entries = self._file_store.load_all()
+        if not all_file_entries:
+            logger.info("Migration: no legacy entries found")
+            return 0
 
-            # Get embedding for target
-            if target.embedding is None:
-                target.embedding = await self._get_embedding(target.body)
-                await self.save(target)
-
-            # Find related entries
-            related = await self.query(
-                target.embedding,
-                max_entries=5,
-                min_relatedness=0.5,
-                filter_fn=lambda e: e.id != target.id and e.id not in processed_ids
-            )
-
-            # Collect entries to merge (target + related)
-            to_merge = [target] + [e for e, score in related if e.id not in processed_ids]
-            if len(to_merge) < 2:
-                # Not enough related entries, just skip
-                processed_ids.add(target.id)
-                continue
-
-            # Ask LLM to consolidate
-            consolidated = await self._consolidate_entries(to_merge)
-            if consolidated:
-                # Delete old entries
-                for old_entry in to_merge:
-                    await self.delete(old_entry.id)
-                # Save new consolidated entries
-                for new_entry in consolidated:
-                    await self.save(new_entry)
-                    processed_ids.add(new_entry.id)
-            else:
-                processed_ids.add(target.id)
-
-            # Update elapsed time
-            elapsed = datetime.now() - start_time
-
-        logger.info(f"Sleep consolidation completed after {elapsed.total_seconds():.0f}s")
-        # Reload cache to reflect changes
-        self._cache = None
-
-    async def _consolidate_entries(
-        self,
-        entries: List[DiaryEntry],
-    ) -> List[DiaryEntry]:
-        """Use LLM to consolidate multiple diary entries into one or more compressed entries."""
+        existing_ids = set(await self._vector_store.get_all_ids())
+        entries = [e for e in all_file_entries if e.id not in existing_ids]
         if not entries:
-            return []
-
-        # Build prompt for consolidation
-        prompt = """You are consolidating diary entries to reduce redundancy while preserving key information.
-Given the following entries, merge them into a single cohesive entry (or multiple if they cover distinct topics).
-For each output entry, start with a metadata line: `---{"confidence": X}---` where X is a number between -1 and 1.
-Then write the consolidated text.
-
-Entries to consolidate:
-"""
-        for i, entry in enumerate(entries):
-            prompt += f"\n--- Entry {i+1} (confidence: {entry.confidence}) ---\n{entry.body}\n"
-
-        prompt += "\nOutput consolidated entries (use the format described above):\n"
-
-        messages = [Message(role="user", content=prompt)]
-        system_prompt = "You are a memory consolidation assistant. Keep essential facts, emotions, and context. Remove redundancy."
-
-        try:
-            response = await self.openai.chat(
-                messages,
-                system_prompt=system_prompt,
-                temperature=0.3,
-                max_tokens=2000,
+            logger.info(
+                f"Migration: {len(all_file_entries)} file entries already in ChromaDB"
             )
-            if not response.choices:
-                logger.warning("No response from LLM for consolidation")
-                return []
-            content = response.choices[0].get("message", {}).get("content", "")
-            # Parse output into entries
-            return self._parse_consolidated_output(content)
-        except Exception as e:
-            logger.error(f"Error during consolidation: {e}")
-            return []
+            return 0
 
-    def _parse_consolidated_output(self, content: str) -> List[DiaryEntry]:
-        """Parse LLM output into DiaryEntry objects."""
-        entries = []
-        # Split by --- separators
-        parts = re.split(r"---\s*\n?", content)
-        # Each part should be a metadata line followed by text
-        metadata = {}
-        body_parts = []
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            # Try to parse JSON if it looks like a metadata block
-            if part.startswith("{") and part.endswith("}"):
-                try:
-                    metadata = json.loads(part)
+        logger.info(
+            f"Migrating {len(entries)}/{len(all_file_entries)} legacy entries to ChromaDB"
+        )
+        migrated = 0
+        papik_chat_id = self.config.papik_chat_id
+
+        for entry in entries:
+            try:
+                embedding = entry.embedding
+                if embedding is None and entry.body.strip():
+                    # Generate embedding if missing
+                    try:
+                        embedding = await self._get_embedding(entry.body)
+                    except Exception:
+                        logger.warning(
+                            f"Cannot generate embedding for {entry.id}, skipping"
+                        )
+                        continue
+
+                if embedding is None:
                     continue
-                except json.JSONDecodeError:
-                    pass
-            # Otherwise treat as body text
-            body_parts.append(part)
 
-        if not body_parts:
-            return []
+                # Determine visibility (замечание 5)
+                # Old entries default to global (public)
+                visibility = "global"
+                meta_chat_id = str(entry.metadata.get("chat_id", ""))
+                if papik_chat_id and meta_chat_id == str(papik_chat_id):
+                    visibility = "private"
 
-        body = "\n\n".join(body_parts)
-        entry_id = f"consolidated_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
-        entry = DiaryEntry(
-            id=entry_id,
-            body=body,
-            metadata=metadata,
-        )
-        # Ensure confidence is set
-        if "confidence" not in entry.metadata:
-            entry.metadata["confidence"] = 0.0
-        entries.append(entry)
-        return entries
+                # Build metadata for ChromaDB (preserve all usage stats!)
+                meta = {
+                    "score": float(entry.metadata.get("score", 0.0)),
+                    "confidence": float(entry.metadata.get("confidence", 0.0)),
+                    "lastUsed": str(entry.metadata.get("lastUsed", "never")),
+                    "usageCount": int(entry.metadata.get("usageCount", 0)),
+                    "importance": float(entry.metadata.get("importance", 0.5)),
+                    "kind": str(entry.metadata.get("kind", "other")),
+                    "tags": str(entry.metadata.get("tags", "")),
+                    "visibility": visibility,
+                    "user_id": str(entry.metadata.get("user_id", "")),
+                    "chat_id": meta_chat_id,
+                    "sourceChannel": str(entry.metadata.get("sourceChannel", "")),
+                    "created_at": int(entry.metadata.get("created_at", 0)),
+                }
 
-    async def add_entry(self, text: str, confidence: float = 0.0) -> str:
-        """Add a new diary entry with optional embedding."""
-        # Check for duplicate (plagiarism) if confidence is low
-        config = get_config()
-        threshold = config.diary_plagiarism_threshold
-        if confidence < 0.5:  # only check low-confidence entries to avoid blocking important facts
-            # Generate embedding for new text
-            embedding = await self._get_embedding(text)
-            # Check against existing entries
-            existing = await self.query(embedding, max_entries=1, min_relatedness=threshold)
-            if existing:
-                # Too similar, skip
-                logger.info(f"Skipping duplicate diary entry (similarity {existing[0][1]:.3f})")
-                return existing[0][0].id
+                # Preserve source_timestamp for audit
+                source_ts = entry.metadata.get("source_timestamp", entry.id)
+                if source_ts != entry.id:
+                    meta["source_timestamp"] = str(source_ts)
 
-        # Create new entry
-        entry_id = f"entry_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
-        entry = DiaryEntry(
-            id=entry_id,
-            body=text,
-            metadata={
-                "confidence": confidence,
-                "last_used": datetime.now().isoformat(),
-                "usage_count": 0,
-            }
-        )
-        # Generate embedding
-        entry.embedding = await self._get_embedding(text)
-        await self.save(entry)
-        logger.info(f"Added diary entry {entry_id}")
-        return entry_id
+                await self._vector_store.add(
+                    entry_id=entry.id,
+                    embedding=embedding.tolist(),
+                    body=entry.body,
+                    metadata=meta,
+                )
+
+                # Delete .md file after successful migration (замечание 2)
+                self._file_store.delete(entry.id)
+                migrated += 1
+
+            except Exception:
+                logger.exception(f"Failed to migrate entry {entry.id}")
+
+        logger.info(f"Migration complete: {migrated}/{len(entries)} entries migrated")
+        return migrated
+
+    # ── Phase 2: Consolidation ─────────────────────────────────────────────
+
+    def set_consolidation_service(self, service: Any) -> None:
+        """Set the sleep consolidation service (Phase 2).
+
+        Args:
+            service: SleepConsolidationService instance
+        """
+        self._consolidation_service = service
+
+    async def sleep_consolidation(self) -> None:
+        """Perform nightly memory consolidation.
+
+        Phase 2: Delegates to consolidation service when configured.
+        Falls back to no-op with warning.
+        """
+        if self._consolidation_service:
+            result = await self._consolidation_service.consolidate()
+            logger.info(
+                f"Consolidation: +{result.added} ~{result.updated} -{result.deleted}"
+            )
+        else:
+            logger.warning("No consolidation service configured")
+
+    # ── Phase 2: Entry management (for consolidation) ──────────────────────
+
+    async def delete_entry(self, entry_id: str) -> None:
+        """Delete a single diary entry from all stores (Phase 2).
+
+        Args:
+            entry_id: Entry identifier to delete
+        """
+        if self._vector_store:
+            await self._vector_store.delete([entry_id])
+        if self._file_store:
+            self._file_store.delete(entry_id)
+        if self._cache is not None:
+            self._cache.pop(entry_id, None)
+
+    async def get_all_entries(self) -> list[DiaryEntry]:
+        """Return all diary entries (Phase 2).
+
+        Returns:
+            List of all DiaryEntry objects
+        """
+        if self._vector_store:
+            rows = await self._vector_store.get()
+            entries: list[DiaryEntry] = []
+            for row in rows:
+                meta = dict(row.get("metadata", {}))
+                body = row.get("document", "")
+                emb = row.get("embedding")
+                if emb is not None:
+                    meta["embedding"] = emb
+                entries.append(DiaryEntry(id=row["id"], body=body, metadata=meta))
+            return entries
+        cache = await self._load_cache()
+        return list(cache.values())
+
+    # ── Phase 6: Text Search (for CLI) ─────────────────────────────────────
+
+    async def search_by_text(
+        self,
+        query: str,
+        max_entries: int = 10,
+    ) -> list[tuple[DiaryEntry, float]]:
+        """Full-text search across diary entry bodies and tags.
+
+        Used by diary_cli for --text and --tags search modes.
+
+        Args:
+            query: Search query (substring or #hashtag)
+            max_entries: Maximum results
+
+        Returns:
+            List of (entry, score) tuples, sorted by relevance
+        """
+        cache = await self._load_cache()
+        results: list[tuple[DiaryEntry, float]] = []
+
+        query_lower = query.lower()
+        is_hashtag = query.startswith("#")
+
+        for entry in cache.values():
+            score = 0.0
+            body_lower = entry.body.lower()
+            tags = str(entry.metadata.get("tags", "")).lower()
+
+            if is_hashtag:
+                # Tag search: exact tag match
+                tag_set = {t.strip().lower() for t in tags.split(",") if t.strip()}
+                if query_lower in tag_set:
+                    score = 1.0
+                elif query_lower in body_lower:
+                    score = 0.5
+            else:
+                # Substring search
+                if query_lower in body_lower:
+                    # Score by occurrence count
+                    count = body_lower.count(query_lower)
+                    score = min(1.0, count / 5.0)
+                elif query_lower in tags:
+                    score = 0.7
+
+            if score > 0:
+                # Boost by importance
+                importance = float(entry.metadata.get("importance", 0.5))
+                final_score = score * 0.8 + importance * 0.2
+                results.append((entry, final_score))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:max_entries]
+
+    async def get_entry(self, entry_id: str) -> DiaryEntry | None:
+        """Retrieve a single diary entry by ID.
+
+        Args:
+            entry_id: Entry identifier
+
+        Returns:
+            DiaryEntry or None
+        """
+        # Try cache first
+        if self._cache is not None and entry_id in self._cache:
+            return self._cache[entry_id]
+
+        # Try file store
+        if self._file_store:
+            return self._file_store.load(entry_id)
+
+        # Legacy: read file directly
+        file_path = self.diary_dir / f"{entry_id}.md"
+        if file_path.exists():
+            content = file_path.read_text(encoding="utf-8")
+            return DiaryEntry.from_file_content(entry_id, content)
+        return None
+
+    async def count(self) -> int:
+        """Return total number of diary entries."""
+        if self._vector_store:
+            return await self._vector_store.count()
+        cache = await self._load_cache()
+        return len(cache)

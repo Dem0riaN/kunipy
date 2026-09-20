@@ -5,12 +5,9 @@ Wraps Stable Diffusion API (or other) to generate images.
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 import aiohttp
 
@@ -22,13 +19,13 @@ logger = logging.getLogger(__name__)
 class ImageGenerator:
     """Generate images using Stable Diffusion (or mock)."""
 
-    def __init__(self, endpoint: Optional[str] = None, checkpoint: Optional[str] = None):
+    def __init__(self, endpoint: str | None = None, checkpoint: str | None = None):
         config = get_config()
         self.enabled = config.capability_take_photo
         self.endpoint = endpoint or config.sd_endpoint.base_url or "http://localhost:7860/"
         self.checkpoint = checkpoint or config.sd_checkpoint
         self._bearer_key = config.sd_endpoint.bearer_key
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -46,8 +43,8 @@ class ImageGenerator:
         height: int = 512,
         steps: int = 20,
         cfg_scale: float = 7.0,
-        seed: Optional[int] = None,
-    ) -> Optional[bytes]:
+        seed: int | None = None,
+    ) -> bytes | None:
         """Generate an image from a prompt.
 
         Returns the image data as bytes (PNG/JPEG) or None on failure.
@@ -86,7 +83,7 @@ class ImageGenerator:
                     return None
                 image_data = base64.b64decode(data["images"][0])
                 return image_data
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(f"Image generation failed: {e}")
             return None
 
@@ -98,9 +95,9 @@ class ImageGenerator:
         height: int = 512,
         steps: int = 20,
         cfg_scale: float = 7.0,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         output_dir: str = "data/generated_images",
-    ) -> Optional[str]:
+    ) -> str | None:
         """Generate an image and save it to disk. Returns the local file path, or None on failure."""
         data = await self.generate(
             prompt=prompt,
@@ -116,8 +113,8 @@ class ImageGenerator:
 
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        import time
         import re
+        import time
         safe_prompt = re.sub(r"[^a-zA-Z0-9_-]+", "_", prompt[:40]).strip("_") or "image"
         filename = f"{int(time.time() * 1000)}_{safe_prompt}.png"
         path = out_dir / filename
@@ -140,7 +137,7 @@ class ImageGenerator:
 
 
 # Singleton instance
-_generator: Optional[ImageGenerator] = None
+_generator: ImageGenerator | None = None
 
 
 def get_image_generator() -> ImageGenerator:

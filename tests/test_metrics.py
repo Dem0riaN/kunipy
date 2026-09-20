@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.metrics import breadcrumbs, record_usage, render_metrics  # noqa: E402
+from src.metrics import breadcrumbs, record_usage, render_metrics
 
 
 def test_record_usage_applies_breadcrumb_labels():

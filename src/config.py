@@ -1,16 +1,15 @@
 """Configuration management for kunipy.
 
 Reads and parses config.toml, supports hot-reloading, provides typed access.
+REFACTORED: No singleton pattern - use load_config() to get Config instance.
 """
 
 from __future__ import annotations
 
-import os
-import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import tomli
 import tomli_w
@@ -31,219 +30,317 @@ class TTSBackend(Enum):
 
 @dataclass
 class Endpoint:
-    """HTTP endpoint with optional bearer token."""
-    base_url: str = ""
+    """LLM endpoint configuration."""
+    base_url: str = "https://api.openai.com/v1"
     bearer_key: str = ""
 
 
 @dataclass
 class EndpointAndModel:
-    """Endpoint with a specific model name."""
+    """Endpoint + model pair."""
     endpoint: Endpoint = field(default_factory=Endpoint)
     model: str = ""
 
 
 @dataclass
 class Config:
-    """Main configuration container."""
+    """Application configuration."""
 
-    # general
-    character_name: str = "Kuni"
-    character_nickname: str = "@kunii_chan"
-    papik_name: str = "Alex2772"
-    papik_chat_id: int = 625207005
+    # Core LLM
+    llm: EndpointAndModel = field(default_factory=EndpointAndModel)
+
+    # Embedding model (for memory system and diary)
+    embedding: EndpointAndModel = field(default_factory=EndpointAndModel)
+
+    # Character
+    character_name: str = "Куни"
+    character_nickname: str = ""
+
+    # Owner (papik)
+    papik_name: str = ""
+    papik_chat_id: int = 0
+
+    # Telegram
+    telegram_enabled: bool = False
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
     telegram_phone: str = ""
-    telegram_enabled: bool = True
-    llm: EndpointAndModel = field(default_factory=lambda: EndpointAndModel(
-        endpoint=Endpoint(base_url="http://localhost:11434/v1/"),
-        model="deepseek-v4-flash"
-    ))
-    embedding: EndpointAndModel = field(default_factory=lambda: EndpointAndModel(
-        endpoint=Endpoint(base_url="http://localhost:11434/v1/"),
-        model="qwen3-embedding"
-    ))
-    lockdown: LockdownMode = LockdownMode.PAPIK_ONLY
+    telegram_database_directory: str = "telegram_data"
 
-    # misc
-    can_write_to_a_new_person: bool = False
-    wake_up_on_pinned_chat: bool = False
-    randomly_go_sleep: bool = True
-    tool_reminder_probability: float = 0.02
-    diary_token_count_trigger: int = 40000
-    diary_injection_max_length: int = 0
-    diary_plagiarism_threshold: float = 0.97
-    diary_min_relatedness: float = 0.80
-    chat_max_history_length: int = 2000
-    metrics_enabled: bool = True
-    metrics_port: int = 9464
-    llm_temperature: Optional[float] = 0.2
-    llm_top_p: Optional[float] = None
-    llm_top_k: Optional[float] = None
-    llm_min_p: Optional[float] = None
-    llm_presence_penalty: Optional[float] = None
-    llm_repetition_penalty: Optional[float] = None
-    anti_repeat_trigger_max: float = 0.95
-    anti_repeat_trigger_avg: float = 0.85
-    anti_repeat_max_history: int = 32
-    suggest_ignore_chance: float = 0.1
-    request_timeout_secs: int = 30
-    video_max_frames: int = 16
-    video_min_step_ms: int = 1000
+    # Desktop (ТЗ-004) — master switch off by default
+    desktop_enabled: bool = False
+    desktop_window_width: int = 800
+    desktop_window_height: int = 600
+    desktop_fps: int = 30
+    desktop_model_path: str = ""
+    desktop_motion_dir: str = ""
+
+    # Diary
+    diary_enabled: bool = False
+    diary_dir: str = "diary"
+    diary_min_relatedness: float = 0.5
+    diary_plagiarism_threshold: float = 0.95
     remind_use_ask: bool = True
-    typing_simulation_min_wpm: int = 120
-    typing_simulation_max_wpm: int = 150
-    check_chats_on_startup: bool = True
-    chat_notification_filter: LockdownMode = LockdownMode.NONE
-    can_join_chats: bool = False
-    can_leave_chats: bool = True
-    worker_count: int = 1
+    # Phase 1: ChromaDB + migration
+    diary_chroma_dir: str = "data/diary_chroma"
+    diary_embedding_dimension: int = 1024
+    diary_auto_rag_enabled: bool = True           # C++ kuni default: on
+    diary_context_token_threshold: int = 40000    # token threshold for auto-dump
+    diary_max_context_entries: int = 5
+    diary_max_merge_span_days: int = 14           # sleep_consolidator.md L68
+    diary_knn_soft_limit: int = 5                 # proactive merging threshold
+    sleep_chance: float = 1.0                     # 1.0 = deterministic 04:00 sleep
 
-    # capabilities
-    capability_web_search: bool = False
-    web_search_ollama_key: str = ""
-    capability_vision: bool = False
-    llm_image_to_text: EndpointAndModel = field(default_factory=lambda: EndpointAndModel(
-        endpoint=Endpoint(base_url="http://localhost:11434/v1/"),
-        model="qwen3.5:9b"
-    ))
-    llm_image_to_text_cheap: EndpointAndModel = field(default_factory=lambda: EndpointAndModel(
-        endpoint=Endpoint(base_url="http://localhost:11434/v1/"),
-        model="ministral-3:8b"
-    ))
-    capability_use_stickers: bool = False
-    capability_take_photo: bool = False
-    sd_endpoint: Endpoint = field(default_factory=lambda: Endpoint(base_url="http://localhost:7860/"))
-    sd_checkpoint: str = "novaAnimeXL_ilV170.safetensors"
+    # Lockdown
+    lockdown: LockdownMode = LockdownMode.NONE
+
+    # Capabilities
     capability_hearing: bool = False
-    llm_audio_to_text: EndpointAndModel = field(default_factory=lambda: EndpointAndModel(
-        endpoint=Endpoint(base_url="http://localhost:9000/v1/"),
-        model="base"
-    ))
+    capability_vision: bool = False
+    capability_take_photo: bool = False
     capability_record_voice: bool = False
+    capability_use_stickers: bool = False
+    capability_web_search: bool = False
+    capability_generate_images: bool = False
+    can_join_chats: bool = False
+    can_leave_chats: bool = False
+
+    # Image generation
+    image_generator: EndpointAndModel = field(default_factory=EndpointAndModel)
+    sd_endpoint: EndpointAndModel = field(default_factory=EndpointAndModel)
+    sd_checkpoint: str = ""
+
+    # Hearing (transcription)
+    hearing: EndpointAndModel = field(default_factory=EndpointAndModel)
+
+    # Vision
+    vision: EndpointAndModel = field(default_factory=EndpointAndModel)
+    llm_image_to_text: EndpointAndModel = field(default_factory=EndpointAndModel)
+    llm_image_to_text_cheap: EndpointAndModel = field(default_factory=EndpointAndModel)
+
+    # Audio transcription
+    llm_audio_to_text: EndpointAndModel = field(default_factory=EndpointAndModel)
+
+    # TTS (record_voice)
     record_voice_backend: TTSBackend = TTSBackend.ELEVENLABS
     record_voice_elevenlabs_key: str = ""
-    record_voice_elevenlabs_voice: str = "pPdl9cQBQq4p6mRkZy2Z"
-    record_voice_openai_url: str = "https://api.openai.com/v1/"
+    record_voice_elevenlabs_voice_id: str = ""
+    record_voice_elevenlabs_voice: str = ""
+    record_voice_elevenlabs_model_id: str = "eleven_turbo_v2_5"
     record_voice_openai_key: str = ""
+    record_voice_openai_url: str = "https://api.openai.com/v1"
     record_voice_openai_model: str = "tts-1"
-    record_voice_openai_voice: str = "alloy"
-    record_voice_openai_format: str = "mp3"
+    record_voice_openai_voice: str = "nova"
+    record_voice_openai_format: str = "opus"
     record_voice_openai_pcm_sample_rate: int = 24000
 
-    # proxy
+    # Proxy server
     proxy_enabled: bool = False
-    proxy_port: int = 10434
-    # If empty, the proxy forwards to the same model/endpoint as `llm`.
+    proxy_port: int = 8080
     proxy_upstream: EndpointAndModel = field(default_factory=EndpointAndModel)
 
-    @classmethod
-    def from_toml_dict(cls, data: dict[str, Any]) -> "Config":
-        """Parse TOML dict into Config instance."""
-        cfg = cls()
+    # Worker
+    worker_sleep_enabled: bool = False
+    worker_sleep_timeout: int = 300
+    worker_random_sleep_enabled: bool = False
+    worker_auto_save_after_session: bool = False
+    worker_count: int = 1
 
-        general = data.get("general", {})
-        cfg.character_name = general.get("character_name", cfg.character_name)
-        cfg.character_nickname = general.get("character_nickname", cfg.character_nickname)
-        cfg.papik_name = general.get("papik_name", cfg.papik_name)
-        cfg.papik_chat_id = general.get("papik_chat_id", cfg.papik_chat_id)
-        cfg.telegram_api_id = general.get("telegram_api_id", cfg.telegram_api_id)
-        cfg.telegram_api_hash = general.get("telegram_api_hash", cfg.telegram_api_hash)
-        cfg.telegram_phone = general.get("telegram_phone", cfg.telegram_phone)
-        cfg.telegram_enabled = general.get("telegram_enabled", cfg.telegram_enabled)
-        if "llm" in general:
-            llm = general["llm"]
-            cfg.llm.model = llm.get("model", cfg.llm.model)
-            if "endpoint" in llm:
-                cfg.llm.endpoint.base_url = llm["endpoint"].get("base_url", cfg.llm.endpoint.base_url)
-                cfg.llm.endpoint.bearer_key = llm["endpoint"].get("bearer_key", cfg.llm.endpoint.bearer_key)
-        if "embedding" in general:
-            emb = general["embedding"]
-            cfg.embedding.model = emb.get("model", cfg.embedding.model)
-            if "endpoint" in emb:
-                cfg.embedding.endpoint.base_url = emb["endpoint"].get("base_url", cfg.embedding.endpoint.base_url)
-                cfg.embedding.endpoint.bearer_key = emb["endpoint"].get("bearer_key", cfg.embedding.endpoint.bearer_key)
-        cfg.lockdown = LockdownMode(general.get("lockdown", cfg.lockdown.value))
+    # LLM parameters
+    request_timeout_secs: int = 120
+    llm_temperature: float = 1.0
+    llm_top_p: float = 1.0
+    llm_top_k: int = 0
+    llm_min_p: float = 0.0
+    llm_presence_penalty: float = 0.0
+    llm_repetition_penalty: float = 1.0
 
-        misc = data.get("misc", {})
-        cfg.can_write_to_a_new_person = misc.get("can_write_to_a_new_person", cfg.can_write_to_a_new_person)
-        cfg.wake_up_on_pinned_chat = misc.get("wake_up_on_pinned_chat", cfg.wake_up_on_pinned_chat)
-        cfg.randomly_go_sleep = misc.get("randomly_go_sleep", cfg.randomly_go_sleep)
-        cfg.tool_reminder_probability = misc.get("tool_reminder_probability", cfg.tool_reminder_probability)
-        cfg.diary_token_count_trigger = misc.get("diary_token_count_trigger", cfg.diary_token_count_trigger)
-        cfg.diary_injection_max_length = misc.get("diary_injection_max_length", cfg.diary_injection_max_length)
-        cfg.diary_plagiarism_threshold = misc.get("diary_plagiarism_threshold", cfg.diary_plagiarism_threshold)
-        cfg.diary_min_relatedness = misc.get("diary_min_relatedness", cfg.diary_min_relatedness)
-        cfg.chat_max_history_length = misc.get("chat_max_history_length", cfg.chat_max_history_length)
-        cfg.metrics_enabled = misc.get("metrics_enabled", cfg.metrics_enabled)
-        cfg.metrics_port = misc.get("metrics_port", cfg.metrics_port)
-        cfg.llm_temperature = misc.get("llm_temperature", cfg.llm_temperature)
-        cfg.llm_top_p = misc.get("llm_top_p", cfg.llm_top_p)
-        cfg.llm_top_k = misc.get("llm_top_k", cfg.llm_top_k)
-        cfg.llm_min_p = misc.get("llm_min_p", cfg.llm_min_p)
-        cfg.llm_presence_penalty = misc.get("presence_penalty", cfg.llm_presence_penalty)
-        cfg.llm_repetition_penalty = misc.get("repetition_penalty", cfg.llm_repetition_penalty)
-        cfg.anti_repeat_trigger_max = misc.get("anti_repeat_trigger_max", cfg.anti_repeat_trigger_max)
-        cfg.anti_repeat_trigger_avg = misc.get("anti_repeat_trigger_avg", cfg.anti_repeat_trigger_avg)
-        cfg.anti_repeat_max_history = misc.get("anti_repeat_max_history", cfg.anti_repeat_max_history)
-        cfg.suggest_ignore_chance = misc.get("suggest_ignore_chance", cfg.suggest_ignore_chance)
-        cfg.request_timeout_secs = misc.get("request_timeout_secs", cfg.request_timeout_secs)
-        cfg.video_max_frames = misc.get("video_max_frames", cfg.video_max_frames)
-        cfg.video_min_step_ms = misc.get("video_min_step_ms", cfg.video_min_step_ms)
-        cfg.remind_use_ask = misc.get("remind_use_ask", cfg.remind_use_ask)
-        cfg.typing_simulation_min_wpm = misc.get("typing_simulation_min_wpm", cfg.typing_simulation_min_wpm)
-        cfg.typing_simulation_max_wpm = misc.get("typing_simulation_max_wpm", cfg.typing_simulation_max_wpm)
-        cfg.check_chats_on_startup = misc.get("check_chats_on_startup", cfg.check_chats_on_startup)
-        cfg.chat_notification_filter = LockdownMode(misc.get("chat_notification_filter", cfg.chat_notification_filter.value))
-        cfg.can_join_chats = misc.get("can_join_chats", cfg.can_join_chats)
-        cfg.can_leave_chats = misc.get("can_leave_chats", cfg.can_leave_chats)
-        cfg.worker_count = misc.get("worker_count", cfg.worker_count)
+    # Anti-repeat system
+    anti_repeat_max_history: int = 5
+    anti_repeat_trigger_max: float = 0.85
+    anti_repeat_trigger_avg: float = 0.70
 
+    # Typing simulation
+    typing_simulation_min_wpm: int = 40
+    typing_simulation_max_wpm: int = 80
+
+    # Web search
+    web_search_ollama_key: str = ""
+
+    # Document processing
+    document_processing_enabled: bool = True
+    document_max_size_bytes: int = 1024 * 1024  # 1MB physical file limit
+    document_max_context_chars: int = 50000      # ~12.5k tokens for LLM context
+
+    # Startup behavior
+    check_chats_on_startup: bool = True
+
+    # Notification filtering
+    chat_notification_filter: LockdownMode = LockdownMode.NONE
+    suggest_ignore_chance: float = 0.0
+
+    # Metrics
+    metrics_enabled: bool = False
+    metrics_port: int = 9090
+
+    # Application timezone
+    timezone: str = "UTC"
+    _timezone_info: ZoneInfo | None = field(default=None, init=False, repr=False)
+
+    # Memory system (ТЗ-002)
+    memory_enabled: bool = True
+    memory_db_path: str = "data/memory.db"  # SQLite path (ChromaDB for vectors)
+    memory_min_similarity: float = 0.5
+    desktop_owner_telegram_id: str | None = None
+
+    @property
+    def timezone_info(self) -> ZoneInfo:
+        """Get validated ZoneInfo instance for application timezone.
+
+        Lazily validates and caches the timezone on first access.
+
+        Returns:
+            ZoneInfo instance for the configured timezone
+
+        Raises:
+            ValueError: If timezone string is invalid
+        """
+        if self._timezone_info is None:
+            try:
+                self._timezone_info = ZoneInfo(self.timezone)
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid timezone '{self.timezone}'. Must be a valid IANA timezone "
+                    f"(e.g., 'UTC', 'Europe/Amsterdam', 'America/New_York'). Error: {e}"
+                ) from e
+        return self._timezone_info
+
+    @staticmethod
+    def from_toml(path: Path | str) -> Config:
+        """Load configuration from TOML file.
+
+        Args:
+            path: Path to config.toml
+
+        Returns:
+            Parsed Config instance
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+
+        with open(path, "rb") as f:
+            data = tomli.load(f)
+
+        cfg = Config()
+
+        # Core LLM
+        llm_cfg = data.get("llm", {})
+        llm_endpoint = llm_cfg.get("endpoint", {})
+        cfg.llm.endpoint.base_url = llm_endpoint.get("base_url", cfg.llm.endpoint.base_url)
+        cfg.llm.endpoint.bearer_key = llm_endpoint.get("bearer_key", cfg.llm.endpoint.bearer_key)
+        cfg.llm.model = llm_cfg.get("model", cfg.llm.model)
+
+        # Character
+        character = data.get("character", {})
+        cfg.character_name = character.get("name", cfg.character_name)
+        # Owner (papik) - read from [character] section
+        cfg.papik_chat_id = character.get("papik_chat_id", cfg.papik_chat_id)
+
+        # Telegram
+        telegram = data.get("telegram", {})
+        cfg.telegram_enabled = telegram.get("enabled", cfg.telegram_enabled)
+        cfg.telegram_api_id = telegram.get("api_id", cfg.telegram_api_id)
+        cfg.telegram_api_hash = telegram.get("api_hash", cfg.telegram_api_hash)
+        cfg.telegram_phone = telegram.get("phone", cfg.telegram_phone)
+        cfg.telegram_database_directory = telegram.get("database_directory", cfg.telegram_database_directory)
+
+        # Diary
+        diary_cfg = data.get("diary", {})
+        cfg.diary_enabled = diary_cfg.get("enabled", cfg.diary_enabled)
+        cfg.diary_dir = diary_cfg.get("directory", cfg.diary_dir)
+        cfg.diary_min_relatedness = diary_cfg.get("min_relatedness", cfg.diary_min_relatedness)
+        cfg.diary_plagiarism_threshold = diary_cfg.get("plagiarism_threshold", cfg.diary_plagiarism_threshold)
+        # Phase 1: ChromaDB + diary pipeline config
+        cfg.diary_chroma_dir = diary_cfg.get("chroma_dir", cfg.diary_chroma_dir)
+        cfg.diary_embedding_dimension = diary_cfg.get("embedding_dimension", cfg.diary_embedding_dimension)
+        cfg.diary_auto_rag_enabled = diary_cfg.get("auto_rag_enabled", cfg.diary_auto_rag_enabled)
+        cfg.diary_context_token_threshold = diary_cfg.get("context_token_threshold", cfg.diary_context_token_threshold)
+        cfg.diary_max_context_entries = diary_cfg.get("max_context_entries", cfg.diary_max_context_entries)
+        cfg.diary_max_merge_span_days = diary_cfg.get("max_merge_span_days", cfg.diary_max_merge_span_days)
+        cfg.diary_knn_soft_limit = diary_cfg.get("knn_soft_limit", cfg.diary_knn_soft_limit)
+        # sleep_chance may live in [diary] or [app]; check diary first, then app
+        cfg.sleep_chance = diary_cfg.get("sleep_chance", cfg.sleep_chance)
+
+        # Desktop character (ТЗ-004)
+        desktop_cfg = data.get("desktop", {})
+        cfg.desktop_enabled = desktop_cfg.get("enabled", cfg.desktop_enabled)
+        cfg.desktop_window_width = desktop_cfg.get("window_width", cfg.desktop_window_width)
+        cfg.desktop_window_height = desktop_cfg.get("window_height", cfg.desktop_window_height)
+        cfg.desktop_fps = desktop_cfg.get("fps", cfg.desktop_fps)
+        cfg.desktop_model_path = desktop_cfg.get("model_path", cfg.desktop_model_path)
+        cfg.desktop_motion_dir = desktop_cfg.get("motion_dir", cfg.desktop_motion_dir)
+
+        # Lockdown
+        lockdown_cfg = data.get("lockdown", {})
+        mode_str = lockdown_cfg.get("mode", "none")
+        cfg.lockdown = LockdownMode(mode_str) if mode_str else LockdownMode.NONE
+        # papik_chat_id already loaded from top-level earlier
+
+        # Capabilities
         capabilities = data.get("capabilities", {})
-        cfg.capability_web_search = capabilities.get("web_search", {}).get("enabled", cfg.capability_web_search)
-        cfg.web_search_ollama_key = capabilities.get("web_search", {}).get("ollama_bearer_key", cfg.web_search_ollama_key)
-        cfg.capability_vision = capabilities.get("vision", {}).get("enabled", cfg.capability_vision)
-        vision = capabilities.get("vision", {})
-        if "llm_image_to_text" in vision:
-            cfg.llm_image_to_text.model = vision["llm_image_to_text"].get("model", cfg.llm_image_to_text.model)
-            if "endpoint" in vision["llm_image_to_text"]:
-                cfg.llm_image_to_text.endpoint.base_url = vision["llm_image_to_text"]["endpoint"].get("base_url", cfg.llm_image_to_text.endpoint.base_url)
-                cfg.llm_image_to_text.endpoint.bearer_key = vision["llm_image_to_text"]["endpoint"].get("bearer_key", cfg.llm_image_to_text.endpoint.bearer_key)
-        if "llm_image_to_text_cheap" in vision:
-            cfg.llm_image_to_text_cheap.model = vision["llm_image_to_text_cheap"].get("model", cfg.llm_image_to_text_cheap.model)
-            if "endpoint" in vision["llm_image_to_text_cheap"]:
-                cfg.llm_image_to_text_cheap.endpoint.base_url = vision["llm_image_to_text_cheap"]["endpoint"].get("base_url", cfg.llm_image_to_text_cheap.endpoint.base_url)
-                cfg.llm_image_to_text_cheap.endpoint.bearer_key = vision["llm_image_to_text_cheap"]["endpoint"].get("bearer_key", cfg.llm_image_to_text_cheap.endpoint.bearer_key)
-        cfg.capability_use_stickers = capabilities.get("use_stickers", {}).get("enabled", cfg.capability_use_stickers)
+
+        # Hearing
+        hearing_cfg = capabilities.get("hearing", {})
+        cfg.capability_hearing = hearing_cfg.get("enabled", cfg.capability_hearing)
+        hearing_endpoint = hearing_cfg.get("endpoint", {})
+        cfg.hearing.endpoint.base_url = hearing_endpoint.get("base_url", cfg.hearing.endpoint.base_url)
+        cfg.hearing.endpoint.bearer_key = hearing_endpoint.get("bearer_key", cfg.hearing.endpoint.bearer_key)
+        cfg.hearing.model = hearing_cfg.get("model", cfg.hearing.model)
+
+        # Vision
+        vision_cfg = capabilities.get("vision", {})
+        cfg.capability_vision = vision_cfg.get("enabled", cfg.capability_vision)
+        vision_endpoint = vision_cfg.get("endpoint", {})
+        cfg.vision.endpoint.base_url = vision_endpoint.get("base_url", cfg.vision.endpoint.base_url)
+        cfg.vision.endpoint.bearer_key = vision_endpoint.get("bearer_key", cfg.vision.endpoint.bearer_key)
+        cfg.vision.model = vision_cfg.get("model", cfg.vision.model)
+
+        # Image generation
+        image_gen_cfg = capabilities.get("generate_images", {})
+        cfg.capability_generate_images = image_gen_cfg.get("enabled", cfg.capability_generate_images)
+        image_endpoint = image_gen_cfg.get("endpoint", {})
+        cfg.image_generator.endpoint.base_url = image_endpoint.get("base_url", cfg.image_generator.endpoint.base_url)
+        cfg.image_generator.endpoint.bearer_key = image_endpoint.get("bearer_key", cfg.image_generator.endpoint.bearer_key)
+        cfg.image_generator.model = image_gen_cfg.get("model", cfg.image_generator.model)
+
+        # Simple boolean capabilities
         cfg.capability_take_photo = capabilities.get("take_photo", {}).get("enabled", cfg.capability_take_photo)
-        take_photo = capabilities.get("take_photo", {})
-        if "sd" in take_photo:
-            sd = take_photo["sd"]
-            cfg.sd_endpoint.base_url = sd.get("endpoint", {}).get("base_url", cfg.sd_endpoint.base_url)
-            cfg.sd_endpoint.bearer_key = sd.get("endpoint", {}).get("bearer_key", cfg.sd_endpoint.bearer_key)
-            cfg.sd_checkpoint = sd.get("checkpoint", cfg.sd_checkpoint)
-        cfg.capability_hearing = capabilities.get("hearing", {}).get("enabled", cfg.capability_hearing)
-        hearing = capabilities.get("hearing", {})
-        if "llm_audio_to_text" in hearing:
-            cfg.llm_audio_to_text.model = hearing["llm_audio_to_text"].get("model", cfg.llm_audio_to_text.model)
-            if "endpoint" in hearing["llm_audio_to_text"]:
-                cfg.llm_audio_to_text.endpoint.base_url = hearing["llm_audio_to_text"]["endpoint"].get("base_url", cfg.llm_audio_to_text.endpoint.base_url)
-                cfg.llm_audio_to_text.endpoint.bearer_key = hearing["llm_audio_to_text"]["endpoint"].get("bearer_key", cfg.llm_audio_to_text.endpoint.bearer_key)
-        cfg.capability_record_voice = capabilities.get("record_voice", {}).get("enabled", cfg.capability_record_voice)
-        record_voice = capabilities.get("record_voice", {})
-        cfg.record_voice_backend = TTSBackend(record_voice.get("backend", cfg.record_voice_backend.value))
-        cfg.record_voice_elevenlabs_key = record_voice.get("elevenlabs", {}).get("key", cfg.record_voice_elevenlabs_key)
-        cfg.record_voice_elevenlabs_voice = record_voice.get("elevenlabs", {}).get("voice_id", cfg.record_voice_elevenlabs_voice)
-        openai_tts = record_voice.get("openai", {})
-        cfg.record_voice_openai_url = openai_tts.get("url", cfg.record_voice_openai_url)
+        cfg.capability_use_stickers = capabilities.get("use_stickers", {}).get("enabled", cfg.capability_use_stickers)
+        cfg.capability_web_search = capabilities.get("web_search", {}).get("enabled", cfg.capability_web_search)
+        cfg.can_join_chats = capabilities.get("join_chats", {}).get("enabled", cfg.can_join_chats)
+        cfg.can_leave_chats = capabilities.get("leave_chats", {}).get("enabled", cfg.can_leave_chats)
+
+        # TTS (record_voice)
+        record_voice_cfg = capabilities.get("record_voice", {})
+        cfg.capability_record_voice = record_voice_cfg.get("enabled", cfg.capability_record_voice)
+        backend_str = record_voice_cfg.get("backend", "elevenlabs")
+        cfg.record_voice_backend = TTSBackend(backend_str) if backend_str else TTSBackend.ELEVENLABS
+
+        elevenlabs_tts = record_voice_cfg.get("elevenlabs", {})
+        cfg.record_voice_elevenlabs_key = elevenlabs_tts.get("key", cfg.record_voice_elevenlabs_key)
+        cfg.record_voice_elevenlabs_voice_id = elevenlabs_tts.get("voice_id", cfg.record_voice_elevenlabs_voice_id)
+        cfg.record_voice_elevenlabs_model_id = elevenlabs_tts.get("model_id", cfg.record_voice_elevenlabs_model_id)
+
+        openai_tts = record_voice_cfg.get("openai", {})
         cfg.record_voice_openai_key = openai_tts.get("key", cfg.record_voice_openai_key)
         cfg.record_voice_openai_model = openai_tts.get("model", cfg.record_voice_openai_model)
         cfg.record_voice_openai_voice = openai_tts.get("voice", cfg.record_voice_openai_voice)
         cfg.record_voice_openai_format = openai_tts.get("response_format", cfg.record_voice_openai_format)
         cfg.record_voice_openai_pcm_sample_rate = openai_tts.get("pcm_sample_rate", cfg.record_voice_openai_pcm_sample_rate)
 
-        proxy_cfg = capabilities.get("proxy", {})
+        # Proxy (top-level section, not in capabilities)
+        proxy_cfg = data.get("proxy", {})
         cfg.proxy_enabled = proxy_cfg.get("enabled", cfg.proxy_enabled)
         cfg.proxy_port = proxy_cfg.get("port", cfg.proxy_port)
         upstream = proxy_cfg.get("upstream", {})
@@ -252,155 +349,178 @@ class Config:
             cfg.proxy_upstream.endpoint.base_url = upstream["endpoint"].get("base_url", cfg.proxy_upstream.endpoint.base_url)
             cfg.proxy_upstream.endpoint.bearer_key = upstream["endpoint"].get("bearer_key", cfg.proxy_upstream.endpoint.bearer_key)
 
+        # Worker
+        worker_cfg = data.get("worker", {})
+        cfg.worker_sleep_enabled = worker_cfg.get("sleep_enabled", cfg.worker_sleep_enabled)
+        cfg.worker_sleep_timeout = worker_cfg.get("sleep_timeout", cfg.worker_sleep_timeout)
+        cfg.worker_random_sleep_enabled = worker_cfg.get("random_sleep_enabled", cfg.worker_random_sleep_enabled)
+        cfg.worker_auto_save_after_session = worker_cfg.get("auto_save_after_session", cfg.worker_auto_save_after_session)
+
+        # Application timezone
+        app_cfg = data.get("app", {})
+        cfg.timezone = app_cfg.get("timezone", cfg.timezone)
+
+        # Validate timezone immediately on load
+        _ = cfg.timezone_info
+
+        # Memory system (ТЗ-002)
+        memory_cfg = data.get("memory", {})
+        cfg.memory_enabled = memory_cfg.get("enabled", cfg.memory_enabled)
+        cfg.memory_db_path = memory_cfg.get("db_path", cfg.memory_db_path)
+        cfg.memory_min_similarity = memory_cfg.get("min_similarity", cfg.memory_min_similarity)
+        cfg.desktop_owner_telegram_id = memory_cfg.get("desktop_owner_telegram_id", cfg.desktop_owner_telegram_id)
+
+        # Embedding model (ТЗ-002)
+        embedding_cfg = data.get("embedding", {})
+        embedding_endpoint = embedding_cfg.get("endpoint", {})
+        cfg.embedding.endpoint.base_url = embedding_endpoint.get("base_url", cfg.embedding.endpoint.base_url)
+        cfg.embedding.endpoint.bearer_key = embedding_endpoint.get("bearer_key", cfg.embedding.endpoint.bearer_key)
+        cfg.embedding.model = embedding_cfg.get("model", cfg.embedding.model)
+
         return cfg
 
 
-_CONFIG: Optional[Config] = None
-_CONFIG_PATH: Optional[Path] = None
-
-
 def load_config(config_path: str | Path = "config.toml") -> Config:
-    """Load config from TOML file."""
-    global _CONFIG_PATH, _CONFIG
-    _CONFIG_PATH = Path(config_path)
+    """Load config from TOML file.
 
-    if not _CONFIG_PATH.exists():
-        # Create default config
-        _CONFIG = Config()
-        save_config(_CONFIG, _CONFIG_PATH)
-        print(f"Created default config at {_CONFIG_PATH}", file=sys.stderr)
-        print("Please populate it and restart.", file=sys.stderr)
-        sys.exit(1)
+    No singleton pattern - returns fresh Config instance.
+    Each caller owns their Config instance.
 
-    with open(_CONFIG_PATH, "rb") as f:
-        data = tomli.load(f)
+    Args:
+        config_path: Path to config.toml file
 
-    _CONFIG = Config.from_toml_dict(data)
-    return _CONFIG
+    Returns:
+        Config instance parsed from file
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        tomli.TOMLDecodeError: If config file is malformed
+    """
+    return Config.from_toml(config_path)
 
 
-def save_config(cfg: Config, path: Path) -> None:
-    """Save config to TOML file."""
-    data: dict[str, Any] = {
-        "general": {
-            "character_name": cfg.character_name,
-            "character_nickname": cfg.character_nickname,
-            "papik_name": cfg.papik_name,
-            "papik_chat_id": cfg.papik_chat_id,
-            "telegram_api_id": cfg.telegram_api_id,
-            "telegram_api_hash": cfg.telegram_api_hash,
-            "telegram_phone": cfg.telegram_phone,
-            "telegram_enabled": cfg.telegram_enabled,
-            "lockdown": cfg.lockdown.value,
-            "llm": {
-                "model": cfg.llm.model,
-                "endpoint": {
-                    "base_url": cfg.llm.endpoint.base_url,
-                    "bearer_key": cfg.llm.endpoint.bearer_key,
-                }
-            },
-            "embedding": {
-                "model": cfg.embedding.model,
-                "endpoint": {
-                    "base_url": cfg.embedding.endpoint.base_url,
-                    "bearer_key": cfg.embedding.endpoint.bearer_key,
-                }
+def save_config(cfg: Config, path: Path | str = "config.toml") -> None:
+    """Save config to TOML file.
+
+    Args:
+        cfg: Config instance to save
+        path: Output path
+    """
+    path = Path(path)
+
+    data = {
+        "app": {
+            "timezone": cfg.timezone,
+        },
+        "llm": {
+            "model": cfg.llm.model,
+            "endpoint": {
+                "base_url": cfg.llm.endpoint.base_url,
+                "bearer_key": cfg.llm.endpoint.bearer_key,
             },
         },
-        "misc": {
-            "can_write_to_a_new_person": cfg.can_write_to_a_new_person,
-            "wake_up_on_pinned_chat": cfg.wake_up_on_pinned_chat,
-            "randomly_go_sleep": cfg.randomly_go_sleep,
-            "tool_reminder_probability": cfg.tool_reminder_probability,
-            "diary_token_count_trigger": cfg.diary_token_count_trigger,
-            "diary_injection_max_length": cfg.diary_injection_max_length,
-            "diary_plagiarism_threshold": cfg.diary_plagiarism_threshold,
-            "diary_min_relatedness": cfg.diary_min_relatedness,
-            "chat_max_history_length": cfg.chat_max_history_length,
-            "metrics_enabled": cfg.metrics_enabled,
-            "metrics_port": cfg.metrics_port,
-            "llm_temperature": cfg.llm_temperature,
-            "llm_top_p": cfg.llm_top_p,
-            "llm_top_k": cfg.llm_top_k,
-            "llm_min_p": cfg.llm_min_p,
-            "presence_penalty": cfg.llm_presence_penalty,
-            "repetition_penalty": cfg.llm_repetition_penalty,
-            "anti_repeat_trigger_max": cfg.anti_repeat_trigger_max,
-            "anti_repeat_trigger_avg": cfg.anti_repeat_trigger_avg,
-            "anti_repeat_max_history": cfg.anti_repeat_max_history,
-            "suggest_ignore_chance": cfg.suggest_ignore_chance,
-            "request_timeout_secs": cfg.request_timeout_secs,
-            "video_max_frames": cfg.video_max_frames,
-            "video_min_step_ms": cfg.video_min_step_ms,
-            "remind_use_ask": cfg.remind_use_ask,
-            "typing_simulation_min_wpm": cfg.typing_simulation_min_wpm,
-            "typing_simulation_max_wpm": cfg.typing_simulation_max_wpm,
-            "check_chats_on_startup": cfg.check_chats_on_startup,
-            "chat_notification_filter": cfg.chat_notification_filter.value,
-            "can_join_chats": cfg.can_join_chats,
-            "can_leave_chats": cfg.can_leave_chats,
-            "worker_count": cfg.worker_count,
+        "embedding": {
+            "model": cfg.embedding.model,
+            "endpoint": {
+                "base_url": cfg.embedding.endpoint.base_url,
+                "bearer_key": cfg.embedding.endpoint.bearer_key,
+            },
+        },
+        "memory": {
+            "enabled": cfg.memory_enabled,
+            "db_path": cfg.memory_db_path,
+            "min_similarity": cfg.memory_min_similarity,
+            "desktop_owner_telegram_id": cfg.desktop_owner_telegram_id,
+        },
+        "character": {
+            "name": cfg.character_name,
+        },
+        "telegram": {
+            "enabled": cfg.telegram_enabled,
+            "api_id": cfg.telegram_api_id,
+            "api_hash": cfg.telegram_api_hash,
+            "phone": cfg.telegram_phone,
+            "database_directory": cfg.telegram_database_directory,
+        },
+        "diary": {
+            "enabled": cfg.diary_enabled,
+            "directory": cfg.diary_dir,
+            "min_relatedness": cfg.diary_min_relatedness,
+            "plagiarism_threshold": cfg.diary_plagiarism_threshold,
+            "chroma_dir": cfg.diary_chroma_dir,
+            "embedding_dimension": cfg.diary_embedding_dimension,
+            "auto_rag_enabled": cfg.diary_auto_rag_enabled,
+            "context_token_threshold": cfg.diary_context_token_threshold,
+            "max_context_entries": cfg.diary_max_context_entries,
+            "max_merge_span_days": cfg.diary_max_merge_span_days,
+            "knn_soft_limit": cfg.diary_knn_soft_limit,
+            "sleep_chance": cfg.sleep_chance,
+        },
+        "lockdown": {
+            "mode": cfg.lockdown.value,
+            "papik_chat_id": cfg.papik_chat_id,
+        },
+        "worker": {
+            "sleep_enabled": cfg.worker_sleep_enabled,
+            "sleep_timeout": cfg.worker_sleep_timeout,
+            "random_sleep_enabled": cfg.worker_random_sleep_enabled,
+            "auto_save_after_session": cfg.worker_auto_save_after_session,
         },
         "capabilities": {
-            "web_search": {
-                "enabled": cfg.capability_web_search,
-                "ollama_bearer_key": cfg.web_search_ollama_key,
+            "hearing": {
+                "enabled": cfg.capability_hearing,
+                "model": cfg.hearing.model,
+                "endpoint": {
+                    "base_url": cfg.hearing.endpoint.base_url,
+                    "bearer_key": cfg.hearing.endpoint.bearer_key,
+                },
             },
             "vision": {
                 "enabled": cfg.capability_vision,
-                "llm_image_to_text": {
-                    "model": cfg.llm_image_to_text.model,
-                    "endpoint": {
-                        "base_url": cfg.llm_image_to_text.endpoint.base_url,
-                        "bearer_key": cfg.llm_image_to_text.endpoint.bearer_key,
-                    }
+                "model": cfg.vision.model,
+                "endpoint": {
+                    "base_url": cfg.vision.endpoint.base_url,
+                    "bearer_key": cfg.vision.endpoint.bearer_key,
                 },
-                "llm_image_to_text_cheap": {
-                    "model": cfg.llm_image_to_text_cheap.model,
-                    "endpoint": {
-                        "base_url": cfg.llm_image_to_text_cheap.endpoint.base_url,
-                        "bearer_key": cfg.llm_image_to_text_cheap.endpoint.bearer_key,
-                    }
-                }
             },
-            "use_stickers": {
-                "enabled": cfg.capability_use_stickers,
+            "generate_images": {
+                "enabled": cfg.capability_generate_images,
+                "model": cfg.image_generator.model,
+                "endpoint": {
+                    "base_url": cfg.image_generator.endpoint.base_url,
+                    "bearer_key": cfg.image_generator.endpoint.bearer_key,
+                },
             },
             "take_photo": {
                 "enabled": cfg.capability_take_photo,
-                "sd": {
-                    "endpoint": {
-                        "base_url": cfg.sd_endpoint.base_url,
-                        "bearer_key": cfg.sd_endpoint.bearer_key,
-                    },
-                    "checkpoint": cfg.sd_checkpoint,
-                }
-            },
-            "hearing": {
-                "enabled": cfg.capability_hearing,
-                "llm_audio_to_text": {
-                    "model": cfg.llm_audio_to_text.model,
-                    "endpoint": {
-                        "base_url": cfg.llm_audio_to_text.endpoint.base_url,
-                        "bearer_key": cfg.llm_audio_to_text.endpoint.bearer_key,
-                    }
-                }
             },
             "record_voice": {
                 "enabled": cfg.capability_record_voice,
                 "backend": cfg.record_voice_backend.value,
                 "elevenlabs": {
                     "key": cfg.record_voice_elevenlabs_key,
-                    "voice_id": cfg.record_voice_elevenlabs_voice,
+                    "voice_id": cfg.record_voice_elevenlabs_voice_id,
+                    "model_id": cfg.record_voice_elevenlabs_model_id,
                 },
                 "openai": {
-                    "url": cfg.record_voice_openai_url,
                     "key": cfg.record_voice_openai_key,
                     "model": cfg.record_voice_openai_model,
                     "voice": cfg.record_voice_openai_voice,
                     "response_format": cfg.record_voice_openai_format,
                     "pcm_sample_rate": cfg.record_voice_openai_pcm_sample_rate,
-                }
+                },
+            },
+            "use_stickers": {
+                "enabled": cfg.capability_use_stickers,
+            },
+            "web_search": {
+                "enabled": cfg.capability_web_search,
+            },
+            "join_chats": {
+                "enabled": cfg.can_join_chats,
+            },
+            "leave_chats": {
+                "enabled": cfg.can_leave_chats,
             },
             "proxy": {
                 "enabled": cfg.proxy_enabled,
@@ -421,18 +541,25 @@ def save_config(cfg: Config, path: Path) -> None:
         tomli_w.dump(data, f)
 
 
+# Singleton pattern removed - use load_config() instead
+# Legacy modules that use get_config() need refactoring
 def get_config() -> Config:
-    """Get the global config instance."""
-    if _CONFIG is None:
-        return load_config()
-    return _CONFIG
+    """DEPRECATED: Singleton pattern removed.
+
+    This function exists only for backward compatibility with legacy modules
+    (openai_chat.py, telegram_client.py, tools.py, etc.) that haven't been
+    fully refactored yet.
+
+    DO NOT USE in new code - use dependency injection instead:
+        config = load_config()
+        component = Component(config=config)
+    """
+    # Lazy load singleton for legacy compatibility
+    global _LEGACY_CONFIG
+    if _LEGACY_CONFIG is None:
+        _LEGACY_CONFIG = load_config()
+    return _LEGACY_CONFIG
 
 
-def reload_config() -> Config:
-    """Reload config from file."""
-    global _CONFIG
-    if _CONFIG_PATH is None:
-        _CONFIG = load_config()
-    else:
-        _CONFIG = load_config(_CONFIG_PATH)
-    return _CONFIG
+# Legacy singleton state
+_LEGACY_CONFIG: Config | None = None

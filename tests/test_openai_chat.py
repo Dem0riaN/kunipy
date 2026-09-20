@@ -12,9 +12,9 @@ from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import src.config as cfgmod  # noqa: E402
-from src.config import Config, Endpoint, EndpointAndModel, TTSBackend  # noqa: E402
-from src.openai_chat import ChatResponse, OpenAIChat  # noqa: E402
+import src.config as cfgmod
+from src.config import Config, Endpoint, EndpointAndModel, TTSBackend
+from src.openai_chat import ChatResponse, OpenAIChat
 
 
 @pytest.fixture

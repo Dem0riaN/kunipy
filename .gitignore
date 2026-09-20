@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Кэш инструментов разработки
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === Содержимое diary/ (директория сохраняется, файлы игнорируются) ===
+diary/*
+!diary/.gitkeep
+
+# === Конфиденциальный конфиг ===
+config.toml
+
+# === Рабочие данные ===
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.log
+
+# === TDLib (бинарные файлы) ===
+tdlib_*/
+*.dll
+*.so.*
+
+# Misc
+.env
+*.bak
+*.tmp
