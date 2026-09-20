@@ -48,6 +48,7 @@ class Worker:
         memory_service=None,  # ТЗ-002: Memory service injection
         diary_dump_service=None,  # Phase 3: Conversation→diary pipeline
         diary_context_injector=None,  # Phase 4: Auto-RAG injection
+        working_memory_update_service=None,  # Autonomy: Working memory extraction
     ):
         """Initialize worker with dependencies.
 
@@ -62,6 +63,7 @@ class Worker:
             memory_service: Memory service for ТЗ-002 (optional)
             diary_dump_service: Conversation→diary dump service (optional, Phase 3)
             diary_context_injector: Auto-RAG diary injector (optional, Phase 4)
+            working_memory_update_service: Working memory update service (optional)
         """
         self.name = name
         self.openai = openai
@@ -73,6 +75,7 @@ class Worker:
         self.memory_service = memory_service  # ТЗ-002
         self._diary_dump_service = diary_dump_service  # Phase 3
         self._diary_context_injector = diary_context_injector  # Phase 4
+        self._working_memory_update_service = working_memory_update_service  # Autonomy
 
         self._running = False
         self._sleeping = False
@@ -80,6 +83,9 @@ class Worker:
 
         # Per-chat conversation history
         self.temporary_context: dict[int, list[Message]] = {}
+
+        # Track last working memory update time per chat
+        self._last_wm_update: dict[int, float] = {}
 
     async def run(self) -> None:
         """Main worker loop."""
@@ -95,6 +101,22 @@ class Worker:
 
                 # Process notification
                 await self._process_notification(notification)
+
+                # Extract chat_id for working memory update
+                chat_id = None
+                if notification.pin and notification.pin.startswith("chat_"):
+                    try:
+                        chat_id = int(notification.pin.split("_")[1])
+                    except (IndexError, ValueError):
+                        pass
+
+                # Update working memory after conversation session
+                if chat_id:
+                    await self._maybe_update_working_memory(chat_id)
+
+                # Auto-save to diary after session if enabled
+                if chat_id and self.config.worker_auto_save_after_session:
+                    await self._maybe_auto_save_diary(chat_id)
 
                 # Maybe go to sleep after processing
                 await self._maybe_sleep()
@@ -373,8 +395,17 @@ class Worker:
         if not self.config.worker_sleep_enabled:
             return
 
-        # Random chance to sleep
-        if random.random() < 0.3:
+        # Check if random sleep is enabled and should trigger
+        should_sleep = False
+        if self.config.worker_random_sleep_enabled:
+            # 30% chance to sleep after message processing
+            if random.random() < 0.3:
+                should_sleep = True
+        else:
+            # Sleep on every idle timeout (original behavior)
+            should_sleep = True
+
+        if should_sleep:
             self._sleeping = True
             self._wake_event.clear()
 
@@ -390,6 +421,69 @@ class Worker:
 
             self._sleeping = False
             logger.debug(f"Worker {self.name} woke up")
+
+    async def _maybe_update_working_memory(self, chat_id: int) -> None:
+        """Update working memory after conversation session ends.
+
+        Called after processing and before sleep to extract working memory
+        using LLM (promises, tasks, emotional state, etc).
+
+        Args:
+            chat_id: Chat identifier
+        """
+        if not self._working_memory_update_service:
+            return
+
+        messages = self.temporary_context.get(chat_id, [])
+        if not messages:
+            return
+
+        try:
+            # Extract user_id from chat_id (stub: use chat_id as user_id for now)
+            user_id = str(chat_id)
+
+            updated_context = await self._working_memory_update_service.update_after_session(
+                messages=messages,
+                user_id=user_id,
+                chat_id=str(chat_id),
+                channel="telegram",
+            )
+
+            if updated_context:
+                logger.info(f"Updated working memory for chat {chat_id}")
+        except Exception:
+            logger.exception(f"Failed to update working memory for chat {chat_id}")
+
+    async def _maybe_auto_save_diary(self, chat_id: int) -> None:
+        """Auto-save conversation to diary after session ends.
+
+        Called after processing and working memory update to preserve
+        conversation context as diary entries.
+
+        Args:
+            chat_id: Chat identifier
+        """
+        if not self._diary_dump_service:
+            return
+
+        messages = self.temporary_context.get(chat_id, [])
+        if not messages:
+            return
+
+        try:
+            # Use diary dump service to summarize and save
+            entries = await self._diary_dump_service._summarize_for_diary(messages)
+            for entry_text in entries:
+                await self.diary.add_entry(
+                    text=entry_text,
+                    confidence=0.7,
+                    visibility="chat",
+                    chat_id=str(chat_id),
+                    source_channel="telegram",
+                )
+            logger.info(f"Auto-saved {len(entries)} diary entries for chat {chat_id}")
+        except Exception:
+            logger.exception(f"Failed to auto-save diary for chat {chat_id}")
 
     def wake_up(self) -> None:
         """Wake up this worker if sleeping."""

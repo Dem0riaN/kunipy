@@ -103,6 +103,7 @@ class App:
                     memory_formation=self._deps.memory_formation,
                     diary_dump_service=self._deps.diary_dump_service,
                     diary_context_injector=self._deps.diary_context_injector,  # Phase 4
+                    working_memory_update_service=self._deps.working_memory_update_service,
                 )
                 for i in range(self._deps.config.worker_count)
             ]
@@ -120,6 +121,7 @@ class App:
                     memory_service=self._deps.memory_service,  # ТЗ-002
                     diary_dump_service=self._deps.diary_dump_service,  # Phase 3
                     diary_context_injector=self._deps.diary_context_injector,  # Phase 4
+                    working_memory_update_service=self._deps.working_memory_update_service,
                 )
                 for i in range(self._deps.config.worker_count)
             ]

@@ -166,6 +166,21 @@ min_relatedness = 0.5
 # Plagiarism threshold for skipping duplicates (0.0 - 1.0)
 plagiarism_threshold = 0.95
 
+# --- Автоматическое сохранение в diary / Auto-save to diary ---
+# Порог токенов для автоматического дампа контекста в diary
+# Token threshold for automatic context dump to diary
+context_token_threshold = 8000
+
+# Автоматически сохранять сессию в diary после завершения
+# Automatically save session to diary after completion
+auto_save_after_session = false
+
+# Автоматическая инъекция diary контекста в системный промпт (Auto-RAG)
+# Automatic diary context injection into system prompt (Auto-RAG)
+# Включает поиск релевантных записей из diary для каждого сообщения
+# Enables search for relevant diary entries for each message
+auto_rag_enabled = true
+
 # ============================================================
 # БЛОКИРОВКА ДОСТУПА / LOCKDOWN
 # ============================================================
@@ -231,6 +246,7 @@ bearer_key = ""
 # --- Веб-поиск / Web search ---
 [capabilities.web_search]
 enabled = false
+ollama_bearer_key = "your-key"
 
 # --- Использование стикеров / Use stickers ---
 [capabilities.use_stickers]
@@ -302,16 +318,30 @@ bearer_key = ""
 # ============================================================
 
 [worker]
+# --- Режим сна (sleep consolidation) / Sleep mode ---
 # Включить режим сна (sleep consolidation)
 # Enable sleep mode (sleep consolidation)
 # Консолидирует память во время простоя
 # Consolidates memory during idle time
-sleep_enabled = false
+sleep_enabled = true
 
 # Таймаут перед сном (секунды)
 # Timeout before sleep (seconds)
 sleep_timeout = 300
 
+# --- Случайный сон (random sleep) / Random sleep ---
+# Включить случайный сон после обработки сообщения
+# Enable random sleep after message processing
+# Добавляет человекоподобное поведение (30% шанс уснуть после сообщения)
+# Adds human-like behavior (30% chance to sleep after message)
+random_sleep_enabled = false
+
+# --- Автосохранение в дневник / Auto-save to diary ---
+# Автоматически сохранять диалоги в дневник после сессии
+# Automatically save conversations to diary after session
+auto_save_after_session = false
+
+# --- Количество воркеров / Worker count ---
 # Количество воркеров для обработки сообщений
 # Number of workers for message processing
 # По умолчанию: 1

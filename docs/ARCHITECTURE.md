@@ -1,7 +1,7 @@
 # kunipy Architecture Guide
 
-**Version**: Hybrid Memory (SQLite + ChromaDB)  
-**Last Updated**: 2026-09-12
+**Version**: Hybrid Memory + Autonomy Features  
+**Last Updated**: 2026-09-19
 
 ---
 
@@ -23,6 +23,8 @@ kunipy follows **Clean Architecture** principles with clear layer separation and
 │       Application Layer                 │
 │  (Use Cases, Orchestration)             │
 │  - ApplicationLifecycle                 │
+│  - WorkingMemoryUpdateService           │
+│  - DiaryDumpService                     │
 │  - TelegramEventHandler                 │
 │  - WorkerOrchestrator                   │
 │  - SleepScheduler                       │
@@ -107,6 +109,8 @@ src/
 ├── application/             # Use cases and orchestration
 │   ├── __init__.py
 │   ├── lifecycle.py        # ApplicationLifecycle
+│   ├── working_memory_update_service.py # Working memory extraction
+│   ├── diary_dump_service.py # Autonomous diary saving
 │   ├── telegram_handler.py # TelegramEventHandler
 │   ├── worker_orchestrator.py
 │   ├── sleep_scheduler.py
@@ -719,6 +723,56 @@ class SleepScheduler:
 - NotificationManager → Worker pins
 - Diary confidence model → MemoryPiece
 - Layer separation → Clean architecture
+
+---
+
+## Autonomy Features
+
+### Working Memory Extraction
+
+**Purpose**: Extract short-term context (promises, tasks, emotional state) after conversation sessions.
+
+**Flow**:
+1. User conversation ends (before sleep or context clear)
+2. `WorkingMemoryUpdateService.update_after_session()` called
+3. LLM extracts structured memory using `prompts/important_things_to_remember.md`
+4. Parsed sections update `WorkingMemory` storage
+5. Persisted to `.md` file for next session
+
+**Sections extracted**:
+- Promises made
+- Unfinished tasks
+- Pending questions
+- Emotional state
+- Physical state
+- Important context
+
+**Integration**: Called from `Worker._process_notification()` after LLM response, before sleep.
+
+### Autonomous Diary Saving
+
+**Purpose**: Automatically save conversation summaries to diary after sessions (optional).
+
+**Flow**:
+1. If `auto_save_after_session = true` in config
+2. `Worker._auto_save_diary()` called after working memory update
+3. `DiaryDumpService._summarize_for_diary()` extracts meaningful entries
+4. Each entry saved to `Diary` with confidence 0.7
+
+**When**: After every conversation session, before sleep.
+
+### Random Sleep Behavior
+
+**Purpose**: Human-like fatigue - character may randomly decide to sleep after processing.
+
+**Flow**:
+1. After message processing completes
+2. If `random_sleep_enabled = true` in config
+3. 30% probability: `Worker._schedule_sleep()` called
+4. Character goes to sleep, performs memory consolidation
+5. Wakes up after configured `sleep_timeout`
+
+**Integration**: Implemented in `Worker._process_notification()` after response generation.
 
 ---
 

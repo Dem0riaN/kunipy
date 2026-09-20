@@ -23,19 +23,55 @@ def _strip_front_matter(text: str) -> str:
     return text.strip()
 
 
-def _substitute_prompt_vars(text: str, config=None) -> str:
+def _substitute_prompt_vars(text: str, config=None, **custom_vars) -> str:
     """Replace ${CHARACTER_NAME}, ${PAPIK_NAME}, ${CHARACTER_NICKNAME} placeholders
-    with actual config values.
+    with actual config values, plus any custom variables.
 
     Uses simple string replacement (not Template) to avoid errors on
     arbitrary $-prefixed text in prompt files.
+
+    Args:
+        text: Template text with placeholders
+        config: Config object OR dict with keys matching placeholder names
+        **custom_vars: Additional variables for {key} placeholders (e.g., timespan="3 hours")
+
+    Returns:
+        Text with all variables substituted
+
+    Examples:
+        # Config object mode (existing functionality)
+        _substitute_prompt_vars(text, config)
+
+        # Dict mode (new functionality)
+        _substitute_prompt_vars(text, {"CHARACTER_NAME": "Kuni", "timespan": "3h"})
+
+        # Combined mode (Config + custom vars)
+        _substitute_prompt_vars(text, config, timespan="3 hours", previous_memory="...")
     """
     if config is None:
-        return text
-    text = text.replace("${CHARACTER_NAME}", config.character_name)
-    text = text.replace("${CHARACTER_NICKNAME}", config.character_nickname or config.character_name)
-    text = text.replace("${PAPIK_NAME}", config.papik_name or "your owner")
-    return text
+        text_result = text
+    elif isinstance(config, dict):
+        # Dict mode: replace variables from dictionary keys
+        text_result = text
+        for key, value in config.items():
+            # Support both ${VAR} and {VAR} syntax
+            text_result = text_result.replace(f"${{{key}}}", str(value))
+            text_result = text_result.replace(f"{{{key}}}", str(value))
+    else:
+        # Config object mode: standard config variables
+        text_result = text.replace("${CHARACTER_NAME}", config.character_name)
+        text_result = text_result.replace("{CHARACTER_NAME}", config.character_name)
+        text_result = text_result.replace("${CHARACTER_NICKNAME}", config.character_nickname or config.character_name)
+        text_result = text_result.replace("{CHARACTER_NICKNAME}", config.character_nickname or config.character_name)
+        text_result = text_result.replace("${PAPIK_NAME}", config.papik_name or "your owner")
+        text_result = text_result.replace("{PAPIK_NAME}", config.papik_name or "your owner")
+
+    # Custom variables from **kwargs (highest priority, override any previous values)
+    for key, value in custom_vars.items():
+        text_result = text_result.replace(f"{{{key}}}", str(value))
+        text_result = text_result.replace(f"${{{key}}}", str(value))
+
+    return text_result
 
 
 def load_prompt(prompt_name: str, prompts_dir: str = "prompts", config=None) -> str:

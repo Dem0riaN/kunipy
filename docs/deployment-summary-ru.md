@@ -1,9 +1,9 @@
 # Руководство по развёртыванию системы памяти (kunipy)
 
-**Дата:** 2026-09-13
+**Дата:** 2026-09-19
 **Проект:** kunipy
 **Спецификация:** ТЗ-002 Техническое задание — память
-**Версия:** 0.5.0 (Гибридная архитектура: SQLite WAL + ChromaDB HNSW)
+**Версия:** 0.6.0 (Автономность: Working Memory + Diary Auto-save + Random Sleep)
 
 > Обновлённое руководство. Предыдущая версия (2026-09-11) описывала только SQLite
 > с numpy-kNN поиском — этот документ заменён и описывает финальную гибридную архитектуру.
@@ -24,11 +24,18 @@ MemoryService (high-level API, dual-write)
 ├── ConversationRepository (SQLite)     — история сообщений (§20)
 ├── UserRepository / ChatRepository     — профили и чаты
 ├── WorkingMemory (in-memory + .md)     — promises, plans, questions
+├── WorkingMemoryUpdateService          — автоматическое извлечение (v0.6.0)
+├── DiaryDumpService                    — автономное сохранение дневника (v0.6.0)
 └── MemoryFormationService              — LLM-экстракция воспоминаний
 ```
 
 **Dual-write:** `MemoryService.create_memory()` пишет вектор в ChromaDB, затем метаданные
 в SQLite. Это обеспечивает и быстрый семантический поиск (<100ms), и полноценные транзакции.
+
+**Автономность (v0.6.0):**
+- Working Memory автоматически обновляется после каждой сессии
+- LLM САМ решает что записать в дневник (`auto_save_after_session`)
+- Случайный сон (30% вероятность) для человекоподобного поведения
 
 **Почему SQLite, а не PostgreSQL:**
 Нагрузка userbot'а (1-5 workers, разные chat_id, ~10 writes/sec) полностью покрывается
@@ -343,5 +350,5 @@ migrate_to_postgres.py               # PostgreSQL migration tool
 
 ---
 
-**Обновлено:** 2026-09-12
-**Версия:** 0.4.0 (Гибридная архитектура: SQLite WAL + ChromaDB HNSW)
+**Обновлено:** 2026-09-19
+**Версия:** 0.6.0 (Автономность: Working Memory + Diary Auto-save + Random Sleep)

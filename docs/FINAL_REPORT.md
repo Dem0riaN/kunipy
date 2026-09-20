@@ -1,9 +1,9 @@
 # ТЗ-002: Memory System — Final Report
 
-**Дата:** 2026-09-13
+**Дата:** 2026-09-19
 **Проект:** kunipy
 **Спецификация:** ТЗ-002 Техническое задание — память
-**Статус:** ✅ Финальная гибридная архитектура реализована (v0.5.0)
+**Статус:** ✅ Финальная гибридная архитектура + автономность реализована (v0.6.0)
 
 > Этот отчёт заменил черновик от 2026-09-11 (Stages 1-7, SQLite-only kNN).
 > С тех пор система перешла на гибрид **SQLite WAL + ChromaDB HNSW**,
@@ -25,10 +25,17 @@ MemoryService (high-level API, dual-write)
 ├── ConversationRepository (SQLite)     — история сообщений (§20)
 ├── UserRepository / ChatRepository     — профили и чаты
 ├── WorkingMemory (in-memory + .md)     — promises, plans, questions
+├── WorkingMemoryUpdateService          — автоматическое извлечение (v0.6.0)
+├── DiaryDumpService                    — автономное сохранение дневника (v0.6.0)
 └── MemoryFormationService              — LLM-экстракция воспоминаний
 ```
 
 **Dual-write:** `MemoryService.create_memory()` пишет вектор в ChromaDB, затем метаданные в SQLite.
+
+**Автономность (v0.6.0):**
+- Working Memory автоматически обновляется после каждой сессии
+- LLM САМ решает что записать в дневник (`auto_save_after_session`)
+- Случайный сон (30% вероятность) для человекоподобного поведения
 
 ### 2. Исправленные критические баги (Этапы 1-4 плана)
 
@@ -113,7 +120,10 @@ min_similarity = 0.5
 | Memory tags (§9) | ✅ | `memory_tags` + репозиторий |
 | Conversation history (§20) | ✅ | `ConversationRepository` |
 | Desktop owner linking | ✅ | `desktop_owner_telegram_id`, cross-channel USER scope |
-| Working memory | ✅ | In-memory + `working_memory.md` |
+| Working memory | ✅ | In-memory + `working_memory.md` + `WorkingMemoryUpdateService` |
+| Working memory extraction | ✅ | `prompts/important_things_to_remember.md` (v0.6.0) |
+| Autonomous diary saving | ✅ | `DiaryDumpService` + `prompts/diary_save.md` (v0.6.0) |
+| Random sleep behavior | ✅ | 30% probability after message processing (v0.6.0) |
 | Memory provenance | ✅ | `source_message_ids`, `source_type` |
 | LLM memory extraction | ✅ | `MemoryFormationService` |
 | Migration from C++ kuni | ✅ | `KuniMigrator` → `MemoryService` |
@@ -148,5 +158,31 @@ min_similarity = 0.5
 
 ---
 
-**Версия:** 0.4.0 (Hybrid Memory: SQLite + ChromaDB)
-**Обновлено:** 2026-09-12
+## 🎉 Версия 0.6.0: Восстановление автономности
+
+**Что добавлено (2026-09-19):**
+
+1. **Working Memory Extraction** — `WorkingMemoryUpdateService`
+   - Автоматическое извлечение обещаний, задач, вопросов, эмоционального состояния
+   - Промпт `prompts/important_things_to_remember.md`
+   - Интеграция в `worker.py` после каждой сессии
+
+2. **Autonomous Diary Saving** — `DiaryDumpService`
+   - LLM САМ решает что записать в дневник
+   - Промпт `prompts/diary_save.md`
+   - Автоматическое сохранение после сессий (`auto_save_after_session`)
+
+3. **Random Sleep Behavior** — human-like fatigue
+   - 30% вероятность уснуть после обработки сообщения
+   - Конфигурация `random_sleep_enabled`
+   - Отделено от консолидации памяти (04:00)
+
+**Восстановленная автономность из C++ kuni:**
+- ✅ Кратковременная память между сессиями
+- ✅ Автономное ведение дневника (LLM принимает решения)
+- ✅ Человекоподобное поведение (случайный сон)
+
+---
+
+**Версия:** 0.6.0 (Autonomy Restoration: Working Memory + Diary Auto-save + Random Sleep)
+**Обновлено:** 2026-09-19

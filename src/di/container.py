@@ -88,6 +88,9 @@ class Dependencies:
     memory_service: MemoryService | None = None  # New high-level memory API
     memory_formation: MemoryFormationService | None = None  # Automatic memory extraction
 
+    # Working memory update service (autonomy restoration)
+    working_memory_update_service: Any | None = None  # WorkingMemoryUpdateService
+
     # Proxy server handle (for graceful shutdown, set by App._start_proxy_server)
     _proxy_server: Any | None = None
 
@@ -315,6 +318,15 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
             config=config,
         )
 
+    # Working memory update service (autonomy restoration)
+    from ..application.working_memory_update_service import WorkingMemoryUpdateService
+    working_memory_update_service = WorkingMemoryUpdateService(
+        working_memory=working_memory,
+        openai_chat=openai_chat,
+        config=config,
+    )
+    logger.info("Working memory update service initialized")
+
     return Dependencies(
         config=config,
         openai_chat=openai_chat,
@@ -332,4 +344,5 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
         diary_dump_service=diary_dump_service,
         diary_context_injector=diary_context_injector,
         consolidation_service=consolidation_service,
+        working_memory_update_service=working_memory_update_service,
     )

@@ -142,6 +142,8 @@ class Config:
     # Worker
     worker_sleep_enabled: bool = False
     worker_sleep_timeout: int = 300
+    worker_random_sleep_enabled: bool = False
+    worker_auto_save_after_session: bool = False
     worker_count: int = 1
 
     # LLM parameters
@@ -351,6 +353,8 @@ class Config:
         worker_cfg = data.get("worker", {})
         cfg.worker_sleep_enabled = worker_cfg.get("sleep_enabled", cfg.worker_sleep_enabled)
         cfg.worker_sleep_timeout = worker_cfg.get("sleep_timeout", cfg.worker_sleep_timeout)
+        cfg.worker_random_sleep_enabled = worker_cfg.get("random_sleep_enabled", cfg.worker_random_sleep_enabled)
+        cfg.worker_auto_save_after_session = worker_cfg.get("auto_save_after_session", cfg.worker_auto_save_after_session)
 
         # Application timezone
         app_cfg = data.get("app", {})
@@ -459,6 +463,8 @@ def save_config(cfg: Config, path: Path | str = "config.toml") -> None:
         "worker": {
             "sleep_enabled": cfg.worker_sleep_enabled,
             "sleep_timeout": cfg.worker_sleep_timeout,
+            "random_sleep_enabled": cfg.worker_random_sleep_enabled,
+            "auto_save_after_session": cfg.worker_auto_save_after_session,
         },
         "capabilities": {
             "hearing": {

@@ -370,9 +370,25 @@ class TelegramClient:
             logger.error(f"Failed to view messages: {e}")
 
     async def react_with_emoji(self, chat_id: int, message_id: int, emoji: str) -> None:
-        """React to a message with an emoji."""
+        """React to a message with an emoji.
+
+        In group chats, TDLib may not have the message in its cache, so we first
+        call getMessage to ensure TDLib knows about it before reacting.
+        """
         if not self._client:
             return
+
+        # Ensure TDLib has the message in its cache
+        # (required for group chats where messages aren't auto-loaded)
+        try:
+            await self._client.api.get_message(
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+        except AioTDLibError as e:
+            logger.error(f"Message not accessible for reaction (chat={chat_id}, msg={message_id}): {e}")
+            return
+
         try:
             await self._client.api.add_message_reaction(
                 chat_id=chat_id,
@@ -707,12 +723,18 @@ class TelegramClient:
         except AioTDLibError as e:
             logger.debug(f"Failed to send typing: {e}")
 
-    async def send_sticker(self, chat_id: int, sticker_file_id: str) -> None:
-        """Send a sticker by file ID (or local path)."""
+    async def send_sticker(self, chat_id: int, sticker_file_id: str, emoji: str = "") -> None:
+        """Send a sticker by file ID (or local path).
+
+        TDLib's InputMessageSticker requires `emoji` to be a string (pydantic
+        validation rejects None), so default to empty string rather than None.
+        """
         if not self._client:
             return
         try:
-            await self._client.send_sticker(chat_id=chat_id, sticker=sticker_file_id)
+            await self._client.send_sticker(
+                chat_id=chat_id, sticker=sticker_file_id, emoji=emoji or ""
+            )
         except AioTDLibError as e:
             logger.error(f"Failed to send sticker: {e}")
 
