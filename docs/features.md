@@ -1,40 +1,36 @@
 # Features
 
-The following capabilities are represented in the current repository. Their
-exact availability depends on configuration, installed dependencies and
-external services.
+This page is intentionally a feature overview. Exact implementation status is maintained in [status.md](status.md).
 
 ## Character
 
-Kunipy contains a character/personality layer intended to maintain a
-consistent AI character across interactions.
-
-## Memory
-
-The memory subsystem uses persistent storage and semantic retrieval. See
-[memory.md](memory.md).
+The character is defined through editable Markdown prompt files. Personality, identity, behaviour and appearance can be changed without modifying Python code. citeturn10view2
 
 ## Telegram
 
-Telegram integration is present in the application architecture and requires
-the corresponding credentials and dependencies.
+Kunipy uses `aiotdlib`/TDLib for Telegram interaction. The current client exposes messaging, chat search, history, reactions, stickers, forwarding, editing and administrative actions. citeturn13view1
 
-## Web and proxy
+## Memory
 
-Web/proxy functionality is implemented as an application subsystem. See
-[proxy.md](proxy.md).
+There are two related memory paths:
 
-## Multimodal features
+1. the diary/RAG system;
+2. the newer hybrid long-term memory system.
 
-The repository contains components for media, speech, text-to-speech and image
-generation. Individual providers are configuration-dependent.
+The new memory system stores vectors in ChromaDB and structured data in SQLite and is wired into the memory-integrated worker. citeturn4view0turn8view0
 
-## Metrics
+## Multimodal interaction
 
-Prometheus-oriented metrics are present for monitoring application activity.
+The media service handles voice transcription, image input and text document extraction. The LLM message model supports OpenAI-style multimodal content. citeturn13view0turn13view2
 
-## Experimental components
+## Generation
 
-Not every module in the repository represents a production-ready feature.
-Experimental or scaffolded components should be described as such rather than
-as completed end-user functionality.
+Image generation uses a Stable Diffusion WebUI-compatible API. TTS is exposed as an LLM tool and can generate Telegram voice messages. citeturn10view0turn10view1
+
+## Web search
+
+The LLM can use a web-search tool backed by Ollama's web-search API. citeturn11view3
+
+## Monitoring
+
+Prometheus usage metrics and an optional metrics endpoint are implemented. citeturn8view1

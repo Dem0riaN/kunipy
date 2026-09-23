@@ -1,15 +1,15 @@
 # Installation
 
-> This document describes the installation flow that should be checked against
-> the current `pyproject.toml` and configuration before release.
-
 ## Requirements
 
-- Python version declared by the current `pyproject.toml`
+- Python 3.11+
 - Git
-- Dependencies declared by the project
+- An OpenAI-compatible LLM endpoint
+- Telegram API ID/hash if Telegram is enabled
 
-## Basic setup
+Optional capabilities require their respective external services/backends.
+
+## Install
 
 ```bash
 git clone https://github.com/Dem0riaN/kunipy.git
@@ -22,16 +22,22 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-## Configuration
+## Configure
 
-Start from the repository's current `config.example.toml` and create the
-corresponding local configuration.
+Start the application once to create/load the local configuration:
 
-Do not copy configuration values blindly: credentials, API keys, Telegram
-credentials, proxy settings, model paths and other environment-specific
-settings must be supplied by the operator.
+```bash
+python run.py
+```
 
-## Running
+Use `config.example.toml` as the full reference.
 
-The repository currently uses `run.py` as its application entry point. Check
-the current source and configuration before deploying it as a service.
+Do not commit API keys, Telegram credentials, bearer tokens or other secrets.
+
+## Run
+
+```bash
+python run.py
+```
+
+If Telegram is enabled and no existing authorized session is available, TDLib/aiotdlib performs the interactive authorization flow. citeturn13view1

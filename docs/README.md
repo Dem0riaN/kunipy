@@ -1,9 +1,8 @@
-# Kunipy Documentation
+# Kunipy documentation
 
-This directory contains the detailed documentation for Kunipy.
+## Start here
 
-## Contents
-
+- [Project status](status.md) — implemented, partial, in progress and planned functionality
 - [Installation](installation.md)
 - [Configuration](configuration.md)
 - [Architecture](architecture.md)
@@ -12,8 +11,4 @@ This directory contains the detailed documentation for Kunipy.
 - [Proxy](proxy.md)
 - [Testing](testing.md)
 - [Origins and attribution](origins.md)
-- [Repository audit](audit.md)
-
-The documentation describes the repository as it currently exists. Where a
-feature is experimental, incomplete, or inferred from source structure rather
-than verified by execution, it is identified as such.
+- [Audit](audit.md)

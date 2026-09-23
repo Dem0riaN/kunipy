@@ -1,28 +1,30 @@
 # Configuration
 
-The authoritative configuration format is the implementation in the current
-source tree together with `config.example.toml`.
+The configuration reference is `config.example.toml`, while the actual accepted settings are defined by the current configuration implementation.
 
-The README intentionally does not reproduce the full configuration file.
+The main README intentionally does not reproduce the entire configuration.
 
-## Configuration areas
+## Main areas
 
-Depending on the current build, configuration covers areas such as:
+- LLM endpoint and generation parameters
+- embeddings
+- Telegram
+- character
+- diary
+- long-term memory
+- working memory
+- voice transcription
+- vision
+- TTS
+- image generation
+- web search
+- proxy
+- metrics
+- desktop character
+- document processing
 
-- application/runtime settings;
-- LLM/model configuration;
-- Telegram;
-- memory;
-- proxy;
-- speech and media;
-- image generation;
-- metrics;
-- character/personality settings.
+## Provider-dependent features
 
-## Important
+Several capabilities are optional and depend on external endpoints. A feature being implemented in the code does not mean it is available without its backend.
 
-Configuration names can change as the project evolves. When documentation and
-the example configuration disagree, verify the corresponding dataclass,
-parser, serializer, or consumer in `src/` before using the setting.
-
-Never commit real credentials or API tokens.
+Never store real secrets in the repository.
