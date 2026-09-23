@@ -1,51 +1,23 @@
 # Testing
 
-## Declared test tooling
+The repository contains tests, but this document intentionally does not claim a
+specific test count unless it has been verified against the current checkout.
 
-`pyproject.toml` configures pytest with automatic asyncio support.
-
-Development dependencies include:
-
-- `pytest`
-- `pytest-asyncio`
-- `httpx`
-- `ruff`
-
-The repository also contains test-related architectural and integration
-material.
-
-## What this documentation claims
-
-This document deliberately does **not** claim a precise test count or coverage
-percentage.
-
-The old README stated "50+ tests", but that number was not independently
-validated during the documentation audit.
-
-Likewise, this audit did not execute the complete test suite against a local
-checkout because the repository was inspected remotely.
-
-## Recommended local verification
-
-After checking out the repository:
+## Recommended checks
 
 ```bash
-pytest
+python -m pytest
 ```
 
-For the suites described by the existing repository documentation:
+For a release, also verify:
 
-```bash
-pytest tests/integration/
-pytest tests/unit/
-pytest tests/architecture/
-```
+- import/startup succeeds;
+- configuration parsing succeeds;
+- enabled integrations can initialize;
+- memory storage is writable;
+- external credentials are valid;
+- metrics endpoints behave as expected;
+- no secrets are present in tracked files.
 
-And for coverage:
-
-```bash
-pytest --cov=src --cov-report=html
-```
-
-The actual test tree should be treated as authoritative if it differs from
-historical README text.
+The test suite and its coverage should be treated as a property of the current
+revision, not as a permanent project claim.

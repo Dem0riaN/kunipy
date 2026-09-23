@@ -1,68 +1,23 @@
-# Memory and diary
+# Memory
 
-Kunipy currently has two related but distinct persistence systems.
+The current memory subsystem is an implemented part of Kunipy rather than an
+empty placeholder.
 
-## 1. Hybrid memory
+It includes persistent storage and semantic retrieval, with SQLite and
+ChromaDB used by the current implementation.
 
-The newer memory subsystem uses:
+Relevant source areas include:
 
-- ChromaDB for semantic/vector search;
-- SQLite for structured metadata;
-- working memory for short-lived state;
-- repositories for conversations, users, chats, preferences, links and tags.
+- `src/infrastructure/memory/`
+- memory services and repositories;
+- memory-related workers;
+- application integration.
 
-`MemoryService.create_memory()` performs a vector-store write followed by an
-SQLite metadata write.
+## Important distinction
 
-Retrieval uses semantic search with scope filtering.
+Memory behaviour depends on configuration, embedding/model availability and
+the runtime environment. Presence of the implementation does not mean every
+deployment has the same memory behaviour.
 
-Current scopes include:
-
-- `CHAT`
-- `USER`
-- `PRIVATE`
-- `GLOBAL`
-
-The service resolves accessible scopes and then deduplicates/ranks results.
-
-## 2. Legacy diary
-
-The Markdown diary remains active.
-
-The current worker can combine:
-
-1. the newer memory context;
-2. legacy diary Auto-RAG context.
-
-This is important because the project is in a migration/hybrid state rather
-than having a single unified memory implementation.
-
-## Automatic formation
-
-`MemoryIntegratedWorker`:
-
-1. retrieves memory context before generation;
-2. processes the message;
-3. takes recent conversation messages;
-4. sends them through `MemoryFormationService`;
-5. generates embeddings;
-6. stores extracted memory in the hybrid memory backend.
-
-The current code therefore does contain a working automatic-memory path; the old
-README statement that the memory system is only a stub is stale.
-
-## Working memory
-
-Working memory is used for short-lived information such as:
-
-- promises;
-- plans;
-- pending context.
-
-It is distinct from long-term semantic memory.
-
-## Important caveat
-
-Memory behaviour is highly dependent on the configured embedding endpoint and
-LLM. Documentation should therefore avoid promising a specific "memory
-quality" or exact semantic behaviour.
+For implementation details, inspect the current memory service and worker
+code rather than relying on older README descriptions.

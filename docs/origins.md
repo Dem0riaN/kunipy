@@ -1,70 +1,37 @@
-# Project origin and provenance
+# Origins and attribution
 
-## Current identity
+## Relationship to Kuni
 
-Kunipy began as a Python project based on the ideas and some implementation
-material of [Alex2772/kuni](https://github.com/Alex2772/kuni).
+Kunipy originally started as a Python project inspired by:
 
-The current codebase has moved far beyond a direct port. It contains substantial
-new work around:
+**Kuni — Alex2772**  
+https://github.com/Alex2772/kuni
 
-- Python architecture;
-- dependency injection;
-- Telegram handling;
-- long-term memory;
-- diary processing;
-- automatic memory formation;
-- working memory;
-- worker orchestration;
-- proactive behaviour;
-- proxy functionality;
-- metrics;
-- desktop-character scaffolding.
+The early project direction was influenced by the ideas and functionality of
+Kuni.
 
-For that reason, the project description should say **"inspired by / based on
-the original kuni project"** rather than simply **"Python port of kuni"**.
+The current Kunipy implementation is substantially different:
 
-## Upstream license situation
+- Kunipy is written in Python;
+- it does not contain the original Kuni C++ source code;
+- the architecture has been substantially redesigned;
+- additional systems such as the character, memory, integrations, proxy,
+  multimodal components and monitoring have been developed for Kunipy;
+- the desktop character direction is Kunipy-specific and is not presented as
+  an original Kuni feature.
 
-The upstream `kuni` repository did not contain a license at the time the
-Kunipy work was started, according to the project history provided by the
-maintainer.
-
-This matters legally: absence of a license normally means that copyright
-permissions are not automatically granted merely because source code is
-publicly visible.
-
-Consequently, the project-specific `LICENSE` in this repository should not be
-read as a retroactive license for code that belongs to the upstream author.
+Accordingly, current Kunipy documentation should not describe the repository
+as a C++ fork or as a direct copy of the current Kuni source tree.
 
 ## Attribution
 
-Redistributions of Kunipy should retain attribution to:
+Kuni is acknowledged here as the project that inspired the early development
+of Kunipy.
 
-- Kunipy;
-- Dem0riaN;
-- Alex2772 / the original `kuni` project where inherited material is
-  present.
+This attribution is intentionally separate from claims about source-code
+derivation.
 
-## Recommended repository wording
+## Current code
 
-Use:
-
-> Kunipy started as a Python project based on the ideas and parts of the
-> implementation of Alex2772/kuni. It has since been substantially redesigned
-> and extended and is now maintained as an independent Python project.
-
-Avoid:
-
-> Python port of kuni.
-
-That wording understates the amount of new work in the current repository.
-
-## License caution
-
-The custom license in the repository is intentionally conservative about
-upstream material. If the intention is to redistribute the entire repository
-under a new license, obtain permission from the original copyright holder for
-any inherited code for which no license was granted.
-
-This document is a provenance note, not legal advice.
+Copyright and licensing of current Kunipy code are described in the repository
+`LICENSE`. Third-party dependencies and assets retain their own licenses.

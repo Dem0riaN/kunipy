@@ -1,45 +1,40 @@
 # Features
 
-This document describes features that are visible in the current codebase.
-It avoids treating historical roadmap text as proof of implementation.
+The following capabilities are represented in the current repository. Their
+exact availability depends on configuration, installed dependencies and
+external services.
 
-| Feature | Current state | Notes |
-|---|---|---|
-| Telegram / TDLib | Implemented | `aiotdlib` integration |
-| OpenAI-compatible chat | Implemented | Async HTTP client |
-| Embeddings | Implemented | OpenAI-compatible `/embeddings` |
-| Character Markdown prompts | Implemented | Created if absent, existing files preserved |
-| SQLite conversation history | Implemented | Part of memory infrastructure |
-| ChromaDB vector memory | Implemented | Persistent vector store |
-| Automatic memory formation | Implemented | LLM-based extraction path exists |
-| Working memory | Implemented | In-memory/file-backed mechanisms |
-| Legacy diary | Implemented | Still used alongside new memory |
-| Diary Auto-RAG | Implemented | Context injection exists |
-| Sleep/consolidation | Implemented | Scheduler is started when diary is available |
-| Proactive messaging | Implemented | Service is started with Telegram |
-| Vision | Integration | Requires a compatible multimodal backend |
-| Hearing/STT | Integration | Requires a compatible transcription backend |
-| TTS | Integration | ElevenLabs/OpenAI configuration paths |
-| Image generation | Integration | Requires compatible backend |
-| Web search | Integration | Capability/tool path exists |
-| OpenAI-compatible proxy | Implemented | FastAPI/Uvicorn |
-| Prometheus metrics | Implemented | `/metrics` endpoint |
-| Desktop character | Experimental/scaffolded | Lazy imports and graceful degradation |
-| Video frame extraction | Not verified as implemented | Do not advertise as a current feature |
-| Full C++ `kuni` memory parity | Not implemented | The current Python system is its own implementation |
+## Character
 
-## External dependencies
+Kunipy contains a character/personality layer intended to maintain a
+consistent AI character across interactions.
 
-A capability being implemented in Python does not mean it works without an
-external backend.
+## Memory
 
-For example:
+The memory subsystem uses persistent storage and semantic retrieval. See
+[memory.md](memory.md).
 
-- vision requires a vision-capable model endpoint;
-- hearing requires a transcription-capable endpoint;
-- TTS requires a configured provider;
-- embeddings require a working embedding endpoint;
-- web search requires the configured search integration.
+## Telegram
 
-The documentation should describe these as integrations rather than bundling
-provider availability into the core project status.
+Telegram integration is present in the application architecture and requires
+the corresponding credentials and dependencies.
+
+## Web and proxy
+
+Web/proxy functionality is implemented as an application subsystem. See
+[proxy.md](proxy.md).
+
+## Multimodal features
+
+The repository contains components for media, speech, text-to-speech and image
+generation. Individual providers are configuration-dependent.
+
+## Metrics
+
+Prometheus-oriented metrics are present for monitoring application activity.
+
+## Experimental components
+
+Not every module in the repository represents a production-ready feature.
+Experimental or scaffolded components should be described as such rather than
+as completed end-user functionality.
