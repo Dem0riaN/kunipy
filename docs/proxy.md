@@ -1,16 +1,7 @@
 # Proxy
 
-Kunipy contains a proxy/web integration subsystem.
+Kunipy contains an OpenAI-compatible proxy server implemented with FastAPI/uvicorn.
 
-The proxy implementation is part of the current Python application and is not
-a component inherited from C++ Kuni source code.
+The application starts it when the corresponding configuration flag is enabled. citeturn8view1turn4view4
 
-Deployment details depend on the current configuration and network environment.
-
-Before exposing a proxy publicly:
-
-- bind only to the required interfaces;
-- configure authentication/authorization where applicable;
-- restrict access at the network layer;
-- avoid exposing administrative endpoints;
-- keep credentials outside the repository.
+Before exposing the proxy outside a trusted network, configure the surrounding network access controls and authentication appropriate to your deployment.

@@ -1,44 +1,30 @@
 # Architecture
 
-Kunipy currently uses a layered Python architecture with application, domain,
-interfaces and infrastructure components.
+Kunipy currently uses a layered application architecture with dependency injection.
 
-The repository also contains compatibility/legacy modules, so the source tree
-should not be treated as a perfectly isolated Clean Architecture reference
-implementation.
-
-## High-level model
+## Main layers
 
 ```text
-interfaces / entry points
+Application / orchestration
         |
         v
-application services
+Domain models and protocols
         |
         v
-domain abstractions
+Interfaces
         |
         v
-infrastructure
-        |
-        +-- LLM / models
-        +-- memory
-        +-- Telegram
-        +-- proxy
-        +-- media / speech
-        +-- metrics
+Infrastructure
 ```
 
-The exact dependency graph is implementation-defined and should be checked
-against the current imports when making architectural changes.
+The composition root is `src/di/container.py`. It creates the LLM client, Telegram client, memory stores/services, diary services, media extractor registry, workers and other runtime components. citeturn8view0
 
-## Compatibility code
+`src/app.py` owns lifecycle orchestration and starts workers, Telegram handlers, sleep/consolidation, proxy, metrics and the optional desktop character. citeturn8view1
 
-Some older access paths remain for compatibility. In particular, configuration
-access is not limited to a single modern dependency-injection path.
+## Architecture status
+
+The project has a genuine DI/layering structure, but it also retains legacy modules and compatibility paths. Documentation therefore deliberately avoids claiming that every historical module has already been migrated into a perfectly strict Clean Architecture.
 
 ## Desktop
 
-Desktop/character UI work is separate from the original Kuni project. It is
-part of Kunipy's own direction and should not be described as functionality
-inherited from Kuni.
+The desktop character is a Kunipy-specific subsystem. It is currently a scaffold/stub and is intentionally isolated behind bridges and lazy imports. citeturn9view0

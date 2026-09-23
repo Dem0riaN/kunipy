@@ -1,37 +1,28 @@
 # Origins and attribution
 
-## Relationship to Kuni
+## Kuni
 
-Kunipy originally started as a Python project inspired by:
+The early development of Kunipy was inspired by:
 
 **Kuni — Alex2772**  
 https://github.com/Alex2772/kuni
 
-The early project direction was influenced by the ideas and functionality of
-Kuni.
+The original Kuni project is acknowledged as the project's starting point/inspiration.
 
-The current Kunipy implementation is substantially different:
+## What Kunipy is now
 
-- Kunipy is written in Python;
-- it does not contain the original Kuni C++ source code;
-- the architecture has been substantially redesigned;
-- additional systems such as the character, memory, integrations, proxy,
-  multimodal components and monitoring have been developed for Kunipy;
-- the desktop character direction is Kunipy-specific and is not presented as
-  an original Kuni feature.
+Kunipy is not documented as a current C++ fork.
 
-Accordingly, current Kunipy documentation should not describe the repository
-as a C++ fork or as a direct copy of the current Kuni source tree.
+The current implementation:
 
-## Attribution
+- is written in Python;
+- does not contain the original Kuni C++ source code;
+- has a substantially different architecture;
+- contains its own memory, character, integration, proxy, multimodal and monitoring systems;
+- has its own desktop-character direction.
 
-Kuni is acknowledged here as the project that inspired the early development
-of Kunipy.
+The attribution is therefore an acknowledgement of the project's origin and inspiration, not a claim that the current Kunipy source tree is a copy of the current Kuni source tree.
 
-This attribution is intentionally separate from claims about source-code
-derivation.
+## Desktop character
 
-## Current code
-
-Copyright and licensing of current Kunipy code are described in the repository
-`LICENSE`. Third-party dependencies and assets retain their own licenses.
+The desktop character / Live2D direction is Kunipy-specific. It should not be presented as a feature inherited from Kuni.
