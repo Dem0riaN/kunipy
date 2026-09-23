@@ -1,326 +1,163 @@
-# Kunipy - AI Character with Long-term Memory
+# Kunipy
 
-Python port of [kuni](https://github.com/alex2772/kuni) — LLM character AI with Telegram interface, built with clean architecture and dependency injection.
+**Kunipy is a Python-based AI character runtime with Telegram integration,
+long-term memory, a configurable persona, autonomous background services, and
+OpenAI-compatible interfaces.**
 
-## Features
+The project began from the ideas and some code of
+[Alex2772/kuni](https://github.com/Alex2772/kuni), but it has since been
+substantially reworked. Kunipy should be treated as an independent Python
+project rather than as a simple Python port or a drop-in replacement for
+`kuni`.
 
-### Core Capabilities
-- **Multi-channel Communication**: Telegram, desktop client, voice interactions
-- **Hybrid Memory System**: SQLite (WAL mode) + ChromaDB (HNSW vector search) for long-term memory
-- **Automatic Memory Formation**: LLM-based extraction of facts, events, thoughts from conversations
-- **Cross-channel Context**: Desktop owner's memories shared across all channels
-- **Working Memory**: In-memory short-term context with `.md` file persistence (promises, plans, pending questions)
-- **Conversation History**: Full message storage with provenance tracking in SQLite
+> **Status:** active development. The documentation describes the repository
+> state reviewed on **2026-09-23**.
 
+## Language
 
-- ✅ **Clean Architecture** — Application/Domain/Interfaces/Infrastructure layers
-- ✅ **Dependency Injection** — Explicit constructor injection, composition root pattern
-- ✅ **Protocol-based interfaces** — All major components implement typed protocols
-- ✅ **Message delivery tracking** — SQLite-backed storage with 10-second verification
-- ✅ Real Telegram integration via `aiotdlib`
-- ✅ LLM tool-calling loop (OpenAI-compatible)
-- ✅ Telegram messaging, editing, forwarding, reactions, group administration
-- ✅ Photo understanding (vision)
-- ✅ Voice-message transcription (hearing)
-- ✅ Text-to-speech / voice-message generation
-- ✅ AI image generation
-- ✅ Web search
-- ✅ OpenAI-compatible proxy server
-- ✅ Prometheus LLM usage metrics
-- ✅ Character persona and system-prompt management
-- ✅ Notification queue and worker system
-- ✅ Diary storage with embeddings and semantic search
+- [English](README.md)
+- [Русский](README.ru.md)
+- [简体中文](README.zh-CN.md)
+- [日本語](README.ja.md)
 
-### In Progress / Planned
+## What it does
 
-- 🟡 **Memory system (ТЗ-002)** — Interfaces готовы, stub implementations работают; полная реализация (ChromaDB, 6-level retrieval, consolidation) запланирована
-- 🟡 **Vision enhancements** — Photo understanding работает; video frame extraction не реализован
-- 🟡 **Diary RAG quality** — Зависит от embedding endpoint и ingestion strategy
-- 🟡 **Optional capabilities** — Vision, hearing, TTS, web search, image generation требуют внешних backends
+Kunipy currently provides the following major building blocks:
 
-### Not Implemented
+- Telegram client integration through TDLib / `aiotdlib`.
+- OpenAI-compatible LLM chat and embedding clients.
+- Editable character/persona prompts stored as Markdown.
+- Long-term memory backed by ChromaDB and SQLite.
+- Automatic memory extraction from recent conversations.
+- Working memory for promises, plans, and short-lived context.
+- Legacy Markdown diary storage and semantic diary retrieval.
+- Automatic diary/context injection (Auto-RAG).
+- Sleep/consolidation and proactive background services.
+- Vision, speech recognition, text-to-speech, image generation, and web-search
+  integrations where the corresponding external backend is configured.
+- An OpenAI-compatible proxy with local tool execution.
+- Prometheus-compatible LLM usage metrics.
+- Optional desktop-character scaffolding with graceful degradation.
 
-- ❌ Video-message frame extraction
-- ❌ Dedicated LLM diary-write tool
-- ❌ Full C++ kuni memory workflow parity
+Not every capability is enabled by default, and several capabilities depend on
+external services or optional components.
 
-## Requirements
+## Quick start
 
-- Python 3.11+
-- Dependencies: `pip install -e .` (see `pyproject.toml`)
-- Telegram API ID/hash from [my.telegram.org](https://my.telegram.org)
-- OpenAI-compatible LLM endpoint (local Ollama, cloud provider, etc.)
+### Requirements
 
-## Installation
+- Python **3.11+**.
+- An OpenAI-compatible LLM endpoint.
+- Telegram API credentials if Telegram is enabled.
+- An embedding endpoint/model if the memory or diary retrieval paths are used.
+
+Install the project:
 
 ```bash
-cd kunipy-main
-
-# Create virtual environment
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-# Install dependencies
+source .venv/bin/activate
 pip install -e .
 ```
 
-### Configuration
+On Windows:
 
-**First run generates `config.toml`:**
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
+```
+
+Create the configuration:
+
+```bash
+cp config.example.toml config.toml
+```
+
+Edit `config.toml`, then start:
 
 ```bash
 python run.py
-# Creates config.toml from defaults, then exits
 ```
 
-Edit `config.toml` with your credentials. Minimal example:
+See:
 
-```toml
-[llm]
-model = "deepseek-r1:14b"
-[llm.endpoint]
-base_url = "http://localhost:11434/v1/"
-bearer_key = ""
+- [`docs/installation.md`](docs/installation.md)
+- [`docs/configuration.md`](docs/configuration.md)
 
-[character]
-name = "Куни"
+## Documentation
 
-[telegram]
-enabled = true
-api_id = 12345678
-api_hash = "your_hash_from_my_telegram_org"
-phone = "+79991234567"
-database_directory = "data/tdlib"
+| Topic | Document |
+|---|---|
+| Documentation index | [`docs/README.md`](docs/README.md) |
+| Installation | [`docs/installation.md`](docs/installation.md) |
+| Configuration | [`docs/configuration.md`](docs/configuration.md) |
+| Architecture | [`docs/architecture.md`](docs/architecture.md) |
+| Features | [`docs/features.md`](docs/features.md) |
+| Memory and diary | [`docs/memory.md`](docs/memory.md) |
+| OpenAI-compatible proxy | [`docs/proxy.md`](docs/proxy.md) |
+| Testing | [`docs/testing.md`](docs/testing.md) |
+| Project origin | [`docs/origins.md`](docs/origins.md) |
+| Repository audit | [`docs/audit.md`](docs/audit.md) |
 
-[diary]
-enabled = true
-directory = "data/diary"
-min_relatedness = 0.5
+## Configuration model
 
-[lockdown]
-mode = "papik_only"  # "none" | "contacts_only" | "papik_only"
-papik_chat_id = 123456789  # Your Telegram user ID
+The repository contains a large `config.example.toml`. It is the authoritative
+configuration reference for the current codebase; the README deliberately
+does not duplicate it.
 
-[capabilities.hearing]
-enabled = false
-model = "whisper-1"
-[capabilities.hearing.endpoint]
-base_url = "http://localhost:11434/v1/"
+Important sections include:
 
-[capabilities.vision]
-enabled = false
-model = "llava:13b"
-[capabilities.vision.endpoint]
-base_url = "http://localhost:11434/v1/"
-```
+- `llm`
+- `embedding`
+- `telegram`
+- `memory`
+- `diary`
+- `lockdown`
+- `capabilities.*`
+- `proxy`
+- `worker`
+- `metrics`
+- `app`
 
-See `config.example.toml` for full reference with bilingual (RU/EN) comments.
-
-## Running
-
-```bash
-# Activate virtual environment
-source .venv/bin/activate  # Linux/macOS
-# or
-.venv\Scripts\activate  # Windows
-
-# Run application
-python run.py
-```
-
-Run from the directory containing `config.toml`. On first run with `telegram_enabled = true`, aiotdlib will prompt for:
-- Phone number
-- SMS/Telegram login code
-- 2FA password (if enabled)
-
-Character files (`prompts/character_base.md`, `prompts/character_appearance.md`, etc.) are loaded from `prompts/` directory.
+Some historical configuration comments still describe features or names from
+earlier implementation stages. See [`docs/configuration.md`](docs/configuration.md)
+for the verified mapping.
 
 ## Architecture
 
-Проект следует **Clean Architecture** с чётким разделением слоёв:
+Kunipy uses dependency injection and separates application orchestration,
+domain models, interfaces, and infrastructure, but the repository still
+contains legacy modules and compatibility code. The architecture should
+therefore be understood as a **hybrid/refactored architecture**, not as a
+perfectly isolated Clean Architecture implementation.
 
-### Core Layers
+See [`docs/architecture.md`](docs/architecture.md).
 
-```
-┌─────────────────────────────────────────────┐
-│  Application Layer (src/application/)       │
-│  - lifecycle.py                             │
-│  - telegram_handler.py                      │
-│  - worker_orchestrator.py                   │
-│  - proactive_service.py                     │
-│  - sleep_scheduler.py                       │
-│  - media_service.py                         │
-└─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  Domain Layer (src/domain/)                 │
-│  - models.py                                │
-│  - delivery/models.py                       │
-│  - memory/models.py                         │
-└─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  Interfaces Layer (src/interfaces/)         │
-│  - llm.py (IOpenAIChat)                     │
-│  - telegram.py (ITelegramClient)            │
-│  - memory.py (IMemoryStore, IWorkingMemory) │
-│  - delivery.py (IMessageDeliveryTracker)    │
-│  - worker.py (INotificationManager)         │
-│  - media.py (IMediaService)                 │
-└─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  Infrastructure Layer (src/infrastructure/) │
-│  - delivery/                                │
-│    - storage.py (SQLite WAL mode)           │
-│    - tracker.py                             │
-│    - telegram_checker.py                    │
-│  - memory/                                  │
-│    - stub_store.py (Phase 1 stub)           │
-│  - worker/                                  │
-│    - stub_notification_manager.py           │
-└─────────────────────────────────────────────┘
-```
+## Relationship to `kuni`
 
-### Key Components
+Kunipy was originally created from work based on
+[Alex2772/kuni](https://github.com/Alex2772/kuni).
 
-- **[src/app.py](src/app.py)** — Application entry point and composition root
-- **[src/config.py](src/config.py)** — Configuration management (TOML parsing, no singleton)
-- **[src/worker.py](src/worker.py)** — Worker processing notifications through LLM tool-calling loop
-- **[src/diary.py](src/diary.py)** — Diary/memory system with embeddings and semantic search
-- **[src/di/container.py](src/di/container.py)** — Dependency injection container (composition root)
-- **[src/telegram_client.py](src/telegram_client.py)** — aiotdlib/TDLib wrapper
-- **[src/openai_chat.py](src/openai_chat.py)** — OpenAI-compatible API client
-- **[src/tools.py](src/tools.py)** — LLM function-calling tools (Telegram actions, diary, etc.)
-- **[src/character.py](src/character.py)** — Character persona and system prompt builder
-- **[src/notification_manager.py](src/notification_manager.py)** — Priority queue for events
-- **[src/proxy_server.py](src/proxy_server.py)** — OpenAI-compatible proxy (FastAPI)
-- **[src/metrics.py](src/metrics.py)** — Prometheus metrics
+It is no longer accurate to describe Kunipy simply as a Python port. The
+current project contains substantial new Python architecture, memory,
+character, diary, worker, proxy, and desktop-related work.
 
-### Design Principles
-
-✅ **Dependency Injection** — Explicit constructor injection, no global singletons  
-✅ **Protocol-based interfaces** — `typing.Protocol` for all major abstractions  
-✅ **Single Responsibility** — Each class has one clear purpose  
-✅ **Composition Root** — Dependencies wired in `di/container.py`  
-✅ **Testability** — 50+ tests (integration + unit) in `tests/`  
-✅ **Layer isolation** — Application → Domain → Interfaces → Infrastructure  
-
-## Testing
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test suites
-pytest tests/integration/
-pytest tests/unit/
-pytest tests/architecture/
-
-# Run with coverage
-pytest --cov=src --cov-report=html
-```
-
-**Test coverage:**
-- Integration tests: DI container, App lifecycle
-- Unit tests: Worker orchestrator, Media service
-- Architecture tests: Interface compliance, layer boundaries, no god objects
-
-## Project Structure
-
-```
-kunipy-main/
-├── run.py                          # Entry point
-├── config.example.toml             # Configuration reference
-├── pyproject.toml                  # Dependencies
-├── README.md
-├── .gitignore
-├── src/
-│   ├── app.py                      # Main application (DI-based)
-│   ├── config.py                   # Configuration management
-│   ├── worker.py                   # Notification worker (DI-based)
-│   ├── diary.py                    # Memory/diary system (DI-based)
-│   ├── character.py                # Persona management
-│   ├── openai_chat.py              # LLM client
-│   ├── telegram_client.py          # Telegram client
-│   ├── tools.py                    # LLM function tools
-│   ├── notification_manager.py     # Event queue
-│   ├── proxy_server.py             # OpenAI proxy
-│   ├── metrics.py                  # Prometheus metrics
-│   ├── image_generator.py          # Image generation
-│   ├── application/                # Application services
-│   │   ├── lifecycle.py
-│   │   ├── telegram_handler.py
-│   │   ├── worker_orchestrator.py
-│   │   ├── proactive_service.py
-│   │   ├── sleep_scheduler.py
-│   │   └── media_service.py
-│   ├── domain/                     # Domain models
-│   │   ├── models.py
-│   │   ├── delivery/
-│   │   └── memory/
-│   ├── interfaces/                 # Protocol definitions
-│   │   ├── llm.py
-│   │   ├── telegram.py
-│   │   ├── memory.py
-│   │   ├── delivery.py
-│   │   ├── worker.py
-│   │   └── media.py
-│   ├── infrastructure/             # Infrastructure implementations
-│   │   ├── delivery/               # Message delivery tracking
-│   │   ├── memory/                 # Memory stores
-│   │   └── worker/                 # Worker infrastructure
-│   ├── di/                         # Dependency injection
-│   │   └── container.py
-│   └── tests/                      # Internal tests
-│       ├── architecture/
-│       └── infrastructure/
-├── tests/                          # Test suites
-│   ├── integration/
-│   │   ├── test_di_container.py
-│   │   └── test_app.py
-│   └── unit/
-│       ├── test_worker_orchestrator.py
-│       └── test_media_service.py
-├── prompts/                        # Character prompts
-│   ├── character_base.md
-│   ├── character_appearance.md
-│   ├── system.md
-│   └── ...
-├── data/                           # Runtime data (gitignored)
-│   ├── tdlib/                      # Telegram session
-│   ├── diary/                      # Diary entries
-│   └── delivery.db                 # Delivery tracking
-├── config/                         # Additional configs (gitignored)
-└── docs/
-    └── ARCHITECTURE.md             # Detailed architecture docs
-```
-
-## Development Roadmap
-
-- ✅ **ТЗ-001: Clean Architecture** — Завершено
-- 🚧 **ТЗ-002: Memory System 2.0** — В планах (ChromaDB, 6-level retrieval, consolidation)
-- 🚧 **ТЗ-003: Vision 2.0** — В планах (multi-monitor, desktop vision)
-- 🚧 **ТЗ-004: Avatar/Renderer** — В планах (animation, interaction, desktop UI)
+The provenance and licensing situation are documented separately in
+[`docs/origins.md`](docs/origins.md).
 
 ## License
 
-See LICENSE file.
+See [`LICENSE`](LICENSE).
 
-## Contributing
+Kunipy uses a project-specific free-distribution license with a no-sale
+restriction and attribution requirements. Because the upstream `kuni`
+repository did not contain a license at the time the work was started, the
+license does not purport to grant rights over material belonging to the
+upstream copyright holder.
 
-1. Follow existing code style (ruff formatting)
-2. Add tests for new features
-3. Update documentation
-4. Keep memory system backward-compatible
+## Disclaimer
 
-## Support
-
-- Issues: [GitHub Issues](https://github.com/your-repo/kunipy/issues)
-- Documentation: See `docs/` directory
-- ТЗ-002 Spec: See `TZ-002.md`
-
----
-
-**Current Version:** 0.5.0 (Hybrid Memory + Phase 2/4: Sleep Consolidation + Auto-RAG)  
-**Last Updated:** 2026-09-13
+Kunipy is software for experimentation and personal projects. External
+services such as Telegram, LLM providers, embedding providers, TTS providers,
+image-generation services, and search providers have their own terms and
+licenses.

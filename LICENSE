@@ -1,0 +1,80 @@
+# Kunipy Free Distribution & Attribution License
+
+Version 1.0 — 2026-09-23
+
+Copyright (c) 2026 Dem0riaN
+
+## 1. Permission
+
+Subject to the scope and conditions below, permission is granted to use, copy,
+modify, and redistribute the original material created for **Kunipy**.
+
+Redistribution of a modified version is permitted provided that the modified
+version remains available under these same conditions.
+
+## 2. No sale
+
+You may not sell, sublicense, rent, lease, or otherwise transfer the Kunipy
+software, or a modified copy of it, in exchange for money or other
+consideration.
+
+Free redistribution is permitted.
+
+This restriction concerns the software itself and modified copies of it. It
+does not by itself prohibit unrelated services, hosting, consulting, or other
+work unless the software itself or a modified copy is being sold or licensed
+for consideration.
+
+## 3. Attribution
+
+Any redistribution, public fork, or published modified version must retain
+clear attribution to:
+
+- **Kunipy**
+- **Dem0riaN**
+- the original **kuni** project by **Alex2772**, where applicable
+
+The attribution must include a link to the corresponding project repositories
+when the distribution format permits links.
+
+## 4. Source availability
+
+When distributing a modified version, the source code of the modified version
+must be made available to recipients free of charge.
+
+## 5. Changes
+
+Modified versions must be clearly identified as modified versions and must not
+be presented as the original Kunipy project.
+
+## 6. Original `kuni` material
+
+Kunipy originated from work based on the `kuni` project by Alex2772.
+
+At the time the Kunipy work was started, the upstream `kuni` repository did
+not contain a license granting redistribution or modification rights. This
+license therefore does **not** claim to grant rights in material that belongs
+to another copyright holder.
+
+To the extent that a file or portion of a file in Kunipy is original material
+from `kuni` or another third-party source, the copyright and licensing status
+of that material remains separate from this license.
+
+Before redistributing the complete repository, downstream distributors should
+verify that they have the necessary rights to redistribute any such inherited
+material.
+
+See `docs/origins.md` for the project history and provenance notes.
+
+## 7. Warranty
+
+The software is provided "as is", without warranty of any kind, express or
+implied. The authors and copyright holders are not liable for any claim,
+damages, or other liability arising from the software or its use, to the
+extent permitted by applicable law.
+
+## 8. Important note
+
+This is a project-specific license, not a standard OSI-approved open-source
+license. It intentionally includes a no-sale restriction and therefore does
+not make Kunipy "open source" in the strict OSI sense.
