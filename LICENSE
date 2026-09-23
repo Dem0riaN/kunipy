@@ -1,0 +1,60 @@
+Kunipy Non-Commercial Redistribution License
+Version 1.0
+
+Copyright (c) 2026 Dem0riaN
+
+1. Grant of rights
+
+Permission is granted, free of charge, to any person obtaining a copy of the
+Kunipy project, to use, copy, modify, and redistribute the covered Kunipy
+materials, subject to the conditions below.
+
+2. Attribution
+
+Any redistribution of Kunipy, whether modified or unmodified, must preserve
+the attribution to the Kunipy project and must include a clear reference to
+the original Kunipy repository:
+
+https://github.com/Dem0riaN/kunipy
+
+The project that originally inspired the early development of Kunipy must also
+be acknowledged:
+
+Kuni — https://github.com/Alex2772/kuni
+
+This attribution requirement does not claim that the current Kunipy code is
+derived from the current Kuni source code.
+
+3. No sale
+
+The covered Kunipy materials, including modified versions of them, may not be
+sold, licensed for a fee, or distributed as a paid product.
+
+This restriction does not prohibit ordinary free redistribution.
+
+4. Modifications
+
+Modified versions may be created and distributed provided that the attribution
+requirements and the no-sale restriction are retained.
+
+5. Independent work
+
+Code independently created for Kunipy is covered by this license only to the
+extent that the copyright holder of that code chooses to distribute it under
+this license.
+
+Third-party software, libraries, assets, models, and other materials remain
+subject to their own licenses and terms.
+
+6. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+7. Important note
+
+This is a custom project license and is not intended to be an OSI-approved
+Open Source license.
