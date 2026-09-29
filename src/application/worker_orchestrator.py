@@ -74,10 +74,10 @@ class WorkerOrchestrator:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
-        # Clear temporary context from each worker
+        # Clear conversation history from each worker
         # (diary dumping happens in App.stop to access diary instance)
         for worker in self._workers:
-            worker.temporary_context = {}
+            worker.conversation_history = {}
 
         self._tasks.clear()
         logger.info("Workers stopped")

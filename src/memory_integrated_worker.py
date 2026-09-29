@@ -35,6 +35,7 @@ class MemoryIntegratedWorker(Worker):
         self,
         memory_service: MemoryService | None = None,
         memory_formation: MemoryFormationService | None = None,
+        media_service=None,  # Sprint 3: Media service injection
         **kwargs,
     ):
         """Initialize memory-integrated worker.
@@ -42,9 +43,10 @@ class MemoryIntegratedWorker(Worker):
         Args:
             memory_service: Memory service for retrieval/storage
             memory_formation: Memory formation service
+            media_service: Media service for image/audio processing (optional)
             **kwargs: Arguments for base Worker
         """
-        super().__init__(**kwargs)
+        super().__init__(media_service=media_service, **kwargs)
         self.memory_service = memory_service
         self.memory_formation = memory_formation
         self._last_retrieved_memories: dict[int, list] = {}
@@ -206,7 +208,7 @@ class MemoryIntegratedWorker(Worker):
         user_id = f"telegram:{chat_id}"
 
         # Get recent conversation history
-        history = self.temporary_context.get(chat_id, [])
+        history = self.conversation_history.get(chat_id, [])
         if not history:
             return
 

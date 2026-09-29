@@ -5,6 +5,7 @@ Exports kunipy memory to human-readable formats without direct database access.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -116,10 +117,13 @@ class MemoryExporter:
         memories = await self._fetch_memories(scope, user_id, chat_id)
         logger.info(f"Found {len(memories)} memories to export")
 
-        with output_path.open("w", encoding="utf-8") as f:
-            for memory in memories:
-                memory_dict = self._memory_to_dict(memory, include_embeddings)
-                f.write(json.dumps(memory_dict, ensure_ascii=False) + "\n")
+        def _write_jsonl() -> None:
+            with output_path.open("w", encoding="utf-8") as f:
+                for memory in memories:
+                    memory_dict = self._memory_to_dict(memory, include_embeddings)
+                    f.write(json.dumps(memory_dict, ensure_ascii=False) + "\n")
+
+        await asyncio.to_thread(_write_jsonl)
 
         logger.info(f"Exported {len(memories)} memories to {output_path}")
         return len(memories)

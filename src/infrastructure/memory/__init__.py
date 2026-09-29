@@ -31,31 +31,31 @@ from .working_memory import WorkingMemory
 from .working_memory_file_store import WorkingMemoryFileStore
 
 __all__ = [
+    "ChatRepository",
+    "ConversationRepository",
+    # Phase 4: Diary auto-RAG injection
+    "DiaryContextInjector",
+    "DiaryDumpService",
+    "DiaryFileStore",
+    # Phase 1: Diary stores
+    "DiaryVectorStore",
     "EmbeddingCache",
     "InMemoryStore",
     "InMemoryWorkingMemory",
-    "MemoryStore",
-    "VectorStore",
-    "WorkingMemory",
-    # Phase 1: Diary stores
-    "DiaryVectorStore",
-    "DiaryFileStore",
-    # Phase 3: Working Memory + Diary Pipeline
-    "TokenCounter",
-    "DiaryDumpService",
-    "WorkingMemoryFileStore",
-    # Phase 4: Diary auto-RAG injection
-    "DiaryContextInjector",
-    # Phase 2: Sleep consolidation
-    "SleepConsolidationService",
     # ТЗ-002
     "MemoryDatabase",
-    "ConversationRepository",
-    "MemoryRepository",
     "MemoryLinkRepository",
-    "UserPreferenceRepository",
-    "MemoryTagRepository",
-    "UserRepository",
-    "ChatRepository",
+    "MemoryRepository",
     "MemoryService",
+    "MemoryStore",
+    "MemoryTagRepository",
+    # Phase 2: Sleep consolidation
+    "SleepConsolidationService",
+    # Phase 3: Working Memory + Diary Pipeline
+    "TokenCounter",
+    "UserPreferenceRepository",
+    "UserRepository",
+    "VectorStore",
+    "WorkingMemory",
+    "WorkingMemoryFileStore",
 ]

@@ -104,23 +104,39 @@ class WorkingMemoryUpdateService:
             logger.warning("important_things_to_remember prompt not available")
             return None
 
+        # Consolidation logging level
+        log_level = self._config.consolidation_logging
+
         # Check cooldown
         now = time.time()
         last_update = self._last_update_time.get(chat_id, 0)
         if now - last_update < self._min_update_interval:
-            logger.debug(f"Update cooldown active for chat {chat_id}")
+            if log_level == "debug":
+                logger.debug(f"Working memory update: cooldown active for chat {chat_id}")
             return None
 
         if not messages:
             return None
+
+        if log_level != "none":
+            logger.info("=" * 60)
+            logger.info("=== Working Memory Update Started ===")
+            logger.info(f"Chat ID: {chat_id}, User ID: {user_id}")
+            logger.info(f"Processing {len(messages)} messages")
 
         try:
             # Get current working memory context
             current_context = await self._working_memory.get_context(user_id, chat_id)
             previous_wm_text = self._format_working_memory_context(current_context)
 
+            if log_level == "debug":
+                logger.debug(f"Current working memory: {len(previous_wm_text)} chars")
+
             # Format conversation for extraction
             conversation_text = self._format_conversation(messages)
+
+            if log_level in ("detailed", "debug"):
+                logger.info(f"Formatted conversation: {len(conversation_text)} chars")
 
             # Build user message with variables substituted
             from ..prompt_loader import _substitute_prompt_vars
@@ -145,6 +161,9 @@ class WorkingMemoryUpdateService:
 
             user_msg = ChatMessage(role="user", content=user_content)
 
+            if log_level in ("detailed", "debug"):
+                logger.info("Calling LLM for working memory extraction...")
+
             # Send to LLM
             response = await self._openai.chat(
                 messages=[user_msg],
@@ -154,6 +173,9 @@ class WorkingMemoryUpdateService:
 
             if not response.choices:
                 logger.warning("LLM returned no choices for working memory extraction")
+                if log_level != "none":
+                    logger.info("=== Working Memory Update Complete: Failed (no LLM response) ===")
+                    logger.info("=" * 60)
                 return None
 
             # Extract text from response
@@ -163,10 +185,25 @@ class WorkingMemoryUpdateService:
 
             if not extracted_text or not extracted_text.strip():
                 logger.warning("LLM returned empty working memory")
+                if log_level != "none":
+                    logger.info("=== Working Memory Update Complete: Empty result ===")
+                    logger.info("=" * 60)
                 return None
+
+            if log_level == "debug":
+                logger.debug(f"Extracted text: {len(extracted_text)} chars")
+                logger.debug(f"Preview: {extracted_text[:300]}...")
 
             # Parse extracted sections and update working memory
             parsed = self._parse_extracted_memory(extracted_text)
+
+            if log_level in ("detailed", "debug"):
+                logger.info(f"Parsed sections: {list(parsed.keys())}")
+                for key, value in parsed.items():
+                    if isinstance(value, list):
+                        logger.info(f"  {key}: {len(value)} items")
+                    elif value:
+                        logger.info(f"  {key}: {len(str(value))} chars")
 
             # Update working memory storage
             await self._working_memory.update_context(
@@ -188,11 +225,17 @@ class WorkingMemoryUpdateService:
             # Update cooldown timer
             self._last_update_time[chat_id] = now
 
-            logger.info(f"Updated working memory for chat {chat_id}")
+            if log_level != "none":
+                logger.info("=== Working Memory Update Complete: Success ===")
+                logger.info("=" * 60)
+
             return extracted_text
 
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to extract/update working memory")
+            if log_level != "none":
+                logger.info(f"=== Working Memory Update Complete: Failed ({e}) ===")
+                logger.info("=" * 60)
             return None
 
     def _format_conversation(self, messages: list[Any]) -> str:

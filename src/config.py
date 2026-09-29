@@ -91,6 +91,9 @@ class Config:
     diary_knn_soft_limit: int = 5                 # proactive merging threshold
     sleep_chance: float = 1.0                     # 1.0 = deterministic 04:00 sleep
 
+    # Memory consolidation logging (Enhancement: Consolidation Logging)
+    consolidation_logging: str = "summary"        # none, summary, detailed, debug
+
     # Lockdown
     lockdown: LockdownMode = LockdownMode.NONE
 
@@ -138,6 +141,37 @@ class Config:
     proxy_enabled: bool = False
     proxy_port: int = 8080
     proxy_upstream: EndpointAndModel = field(default_factory=EndpointAndModel)
+
+    # Proxy Phase 1: Session management
+    proxy_session_timeout_minutes: int = 30
+    proxy_auto_save_to_diary: bool = True
+    proxy_streaming_mode: str = "buffered"  # "buffered" | "incremental" (future)
+
+    # Proxy Phase 4: Context persistence
+    proxy_diary_save_interval_minutes: int = 5
+
+    # Proxy Phase 5: Multi-user & Multi-upstream
+    proxy_require_user_id: bool = False  # Enforce X-User-ID header
+    proxy_allow_anonymous: bool = True   # Allow anonymous users
+    proxy_rate_limit_enabled: bool = True
+    proxy_rate_limit_requests_per_minute: int = 60
+    proxy_rate_limit_requests_per_hour: int = 1000
+    proxy_rate_limit_burst_size: int = 10
+    proxy_upstreams: list[dict] = field(default_factory=list)  # Multi-upstream configs
+
+    # Proxy - WebSocket support (Open-LLM-VTuber integration)
+    proxy_websocket_enabled: bool = False
+    proxy_websocket_path: str = "/v1/ws/chat"
+
+    # Proxy - Thinking filter
+    proxy_thinking_filter_mode: str = "structured"  # structured | heuristic | off
+
+    # Proxy - Mode selection
+    proxy_mode: str = "direct"  # direct | telegram
+
+    # Proxy - Papik identification
+    proxy_default_user_as_papik: bool = True  # Single-user mode (Open-LLM-VTuber)
+    proxy_require_papik_header: bool = False  # Require X-Papik-Auth header
 
     # Worker
     worker_sleep_enabled: bool = False
@@ -271,6 +305,8 @@ class Config:
         cfg.diary_knn_soft_limit = diary_cfg.get("knn_soft_limit", cfg.diary_knn_soft_limit)
         # sleep_chance may live in [diary] or [app]; check diary first, then app
         cfg.sleep_chance = diary_cfg.get("sleep_chance", cfg.sleep_chance)
+        # Consolidation logging (Enhancement: Consolidation Logging)
+        cfg.consolidation_logging = diary_cfg.get("consolidation_logging", cfg.consolidation_logging)
 
         # Desktop character (ТЗ-004)
         desktop_cfg = data.get("desktop", {})
@@ -343,6 +379,34 @@ class Config:
         proxy_cfg = data.get("proxy", {})
         cfg.proxy_enabled = proxy_cfg.get("enabled", cfg.proxy_enabled)
         cfg.proxy_port = proxy_cfg.get("port", cfg.proxy_port)
+        cfg.proxy_session_timeout_minutes = proxy_cfg.get("session_timeout_minutes", cfg.proxy_session_timeout_minutes)
+        cfg.proxy_auto_save_to_diary = proxy_cfg.get("auto_save_to_diary", cfg.proxy_auto_save_to_diary)
+        cfg.proxy_streaming_mode = proxy_cfg.get("streaming_mode", cfg.proxy_streaming_mode)
+        cfg.proxy_diary_save_interval_minutes = proxy_cfg.get("diary_save_interval_minutes", cfg.proxy_diary_save_interval_minutes)
+
+        # Proxy - Thinking filter and mode
+        cfg.proxy_thinking_filter_mode = proxy_cfg.get("thinking_filter_mode", cfg.proxy_thinking_filter_mode)
+        cfg.proxy_mode = proxy_cfg.get("proxy_mode", cfg.proxy_mode)
+
+        # Proxy - Papik identification
+        cfg.proxy_default_user_as_papik = proxy_cfg.get("default_user_as_papik", cfg.proxy_default_user_as_papik)
+        cfg.proxy_require_papik_header = proxy_cfg.get("require_papik_header", cfg.proxy_require_papik_header)
+
+        # Phase 5: Multi-user & Multi-upstream
+        cfg.proxy_require_user_id = proxy_cfg.get("require_user_id", cfg.proxy_require_user_id)
+        cfg.proxy_allow_anonymous = proxy_cfg.get("allow_anonymous", cfg.proxy_allow_anonymous)
+
+        # Rate limiting
+        rate_limit_cfg = proxy_cfg.get("rate_limit", {})
+        cfg.proxy_rate_limit_enabled = rate_limit_cfg.get("enabled", cfg.proxy_rate_limit_enabled)
+        cfg.proxy_rate_limit_requests_per_minute = rate_limit_cfg.get("requests_per_minute", cfg.proxy_rate_limit_requests_per_minute)
+        cfg.proxy_rate_limit_requests_per_hour = rate_limit_cfg.get("requests_per_hour", cfg.proxy_rate_limit_requests_per_hour)
+        cfg.proxy_rate_limit_burst_size = rate_limit_cfg.get("burst_size", cfg.proxy_rate_limit_burst_size)
+
+        # Multi-upstream configuration
+        upstreams_cfg = proxy_cfg.get("upstreams", [])
+        cfg.proxy_upstreams = upstreams_cfg if isinstance(upstreams_cfg, list) else []
+
         upstream = proxy_cfg.get("upstream", {})
         cfg.proxy_upstream.model = upstream.get("model", cfg.proxy_upstream.model)
         if "endpoint" in upstream:
@@ -455,6 +519,7 @@ def save_config(cfg: Config, path: Path | str = "config.toml") -> None:
             "max_merge_span_days": cfg.diary_max_merge_span_days,
             "knn_soft_limit": cfg.diary_knn_soft_limit,
             "sleep_chance": cfg.sleep_chance,
+            "consolidation_logging": cfg.consolidation_logging,
         },
         "lockdown": {
             "mode": cfg.lockdown.value,

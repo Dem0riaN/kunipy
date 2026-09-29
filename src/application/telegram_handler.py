@@ -10,7 +10,6 @@ import random
 from ..di import Dependencies
 from ..domain.models import TelegramMessage
 from ..interfaces.worker import Notification
-from .media_service import MediaService
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +18,12 @@ class TelegramEventHandler:
     """Handles incoming Telegram events.
 
     Responsibilities:
-    1. Process new messages
+    1. Route Telegram events to appropriate handlers
     2. Apply lockdown/access control
-    3. Transcribe voice messages
-    4. Describe photos (vision)
-    5. Format notifications
-    6. Route to notification manager
+    3. Process media (transcribe voice, describe photos)
+    4. Create and enqueue notifications
+
+    Business logic delegated to TelegramMessageService (Sprint 3 Task 2).
 
     Based on C++ kuni event handling pattern.
     """
@@ -38,13 +37,9 @@ class TelegramEventHandler:
         self._deps = deps
         self._current_chat_id: int | None = None
 
-        # Initialize media service with extractor registry
-        self._media_service = MediaService(
-            telegram_client=deps.telegram_client,
-            openai_client=deps.openai_chat,
-            config=deps.config,
-            extractor_registry=deps.extractor_registry
-        )
+        # Use injected services (Sprint 3)
+        self._media_service = deps.media_service
+        self._message_service = deps.telegram_message_service
 
     async def handle_event(self, event: dict) -> None:
         """Handle incoming Telegram event.
@@ -121,33 +116,25 @@ class TelegramEventHandler:
 
         # Mark message as read immediately and show typing indicator
         message_id = getattr(msg, 'message_id', getattr(msg, 'id', 0))
-        if message_id and self._deps.telegram_client:
-            try:
-                await self._deps.telegram_client.view_messages(msg.chat_id, [message_id])
-                logger.debug(f"Marked message {message_id} in chat {msg.chat_id} as read")
-                # Show typing indicator immediately
-                await self._deps.telegram_client.send_typing(msg.chat_id)
-                logger.debug(f"Sent typing indicator to chat {msg.chat_id}")
-            except (ValueError, KeyError, TypeError, RuntimeError) as e:
-                logger.warning(f"Failed to mark message as read or send typing: {e}")
+        await self._message_service.mark_as_read_and_typing(msg.chat_id, message_id)
 
         # Process media (transcribe voice, describe photos)
         await self._process_media(msg)
 
-        # Build notification
-        notification_text = await self._format_notification(msg)
+        # Build notification using message service
+        notification_text = await self._message_service.format_notification(msg)
         if not notification_text:
             logger.warning(f"Failed to format notification for chat {msg.chat_id}")
             return
 
         logger.debug(f"Notification text created: {notification_text[:100]}...")
 
-        # Determine priority
-        priority = await self._calculate_priority(msg)
+        # Determine priority using message service
+        priority = await self._message_service.calculate_priority(msg)
         logger.debug(f"Message priority: {priority}")
 
         # Check if message has image media for multimodal content
-        has_image_media = msg.media and msg.media.get("type") in ("photo", "sticker")
+        has_image_media = self._message_service.has_image_media(msg)
 
         # Create notification with chat pin
         notification = Notification(
@@ -309,69 +296,6 @@ class TelegramEventHandler:
 
         # Photos and stickers: keep media metadata for multimodal content creation
         # (handled in worker when creating Message objects)
-
-    async def _format_notification(self, msg: TelegramMessage) -> str:
-        """Format message as notification string.
-
-        Args:
-            msg: Message
-
-        Returns:
-            Notification text
-        """
-        chat = await self._deps.telegram_client.get_chat(msg.chat_id)
-        chat_title = chat.title if chat else f"Chat {msg.chat_id}"
-
-        # Get sender info
-        sender_name = "Unknown"
-        sender_id = msg.user_id
-        if sender_id:
-            user = await self._deps.telegram_client.get_user(sender_id)
-            if user:
-                sender_name = f"{user.first_name} {user.last_name}".strip() or \
-                              user.username or f"user_{sender_id}"
-
-        # Get message text (handle both 'text' and 'content' fields)
-        msg_text = getattr(msg, 'text', getattr(msg, 'content', ''))
-
-        # Format based on chat type
-        is_dm = chat and chat.type == "private"
-
-        if is_dm:
-            return (
-                f'<notification chat_id="{msg.chat_id}">\n'
-                f"You received a direct message from {sender_name} (chat_id={msg.chat_id})\n"
-                f"{msg_text}\n"
-                f"</notification>\n"
-                f"You don't have any chat open. Use #open tool to open the chat"
-            )
-        else:
-            return (
-                f'<notification chat_id="{msg.chat_id}">\n'
-                f'{sender_name} sent a message in group chat "{chat_title}" (chat_id={msg.chat_id})\n'
-                f"{msg_text}\n"
-                f"</notification>\n"
-                f"You don't have any chat open. Use #open tool to open the chat"
-            )
-
-    async def _calculate_priority(self, msg: TelegramMessage) -> int:
-        """Calculate notification priority.
-
-        Args:
-            msg: Message
-
-        Returns:
-            Priority (higher = more important)
-        """
-        priority = 0
-
-        # Papik (owner) gets highest priority
-        # Check both user_id/sender_id and chat_id
-        sender_id = msg.user_id
-        if sender_id == self._deps.config.papik_chat_id or msg.chat_id == self._deps.config.papik_chat_id:
-            priority = 1000
-
-        return priority
 
     async def _handle_chat_update(self, chat: dict) -> None:
         """Handle chat update event (title change, pinned status, etc).

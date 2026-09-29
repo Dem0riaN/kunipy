@@ -72,8 +72,8 @@ class DesktopCharacter:
         except ImportError as e:
             logger.warning(f"Desktop dependencies not installed: {e}")
             self._running = False
-        except Exception as e:
-            logger.exception(f"Desktop startup failed: {e}")
+        except Exception:
+            logger.exception("Desktop startup failed")
             self._running = False
 
     async def stop(self) -> None:
@@ -90,8 +90,8 @@ class DesktopCharacter:
             # TODO: Real implementation will clean up PySide6, Live2D, OpenGL resources
             self._running = False
             logger.info("Desktop character stopped")
-        except Exception as e:
-            logger.exception(f"Desktop shutdown failed (ignored): {e}")
+        except Exception:
+            logger.exception("Desktop shutdown failed (ignored)")
             self._running = False
 
     def is_running(self) -> bool:

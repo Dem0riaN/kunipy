@@ -1,43 +1,35 @@
-"""Tools package for kunipy utilities."""
+"""Backward compatibility module for old tools.py imports.
 
-import os
-import sys
+This module preserves the original tools.py API while the codebase
+transitions to the new application.tools registry-based system.
 
-_cached_tools_module = None
+DEPRECATED: Import from src.application.tools instead.
+"""
 
+from pathlib import Path
 
-def _get_tools_module():
-    """Lazy load tools.py module to avoid circular dependency."""
-    global _cached_tools_module
-    if _cached_tools_module is None:
-        import importlib.util
+from ..application.tools import Tool, ToolContext
 
-        # Get absolute path to src/tools.py (sibling of tools/ directory)
-        src_dir = os.path.dirname(__file__)
-        tools_py_path = os.path.join(src_dir, '..', 'tools.py')
-        tools_py_path = os.path.abspath(tools_py_path)
-
-        if not os.path.exists(tools_py_path):
-            raise AttributeError(f"Could not find tools.py at {tools_py_path}")
-
-        # Load tools.py as a separate module
-        spec = importlib.util.spec_from_file_location('src.tools_impl', tools_py_path)
-        if spec is None or spec.loader is None:
-            raise AttributeError("Could not load tools.py module")
-
-        tools_mod = importlib.util.module_from_spec(spec)
-        sys.modules['src.tools_impl'] = tools_mod
-        spec.loader.exec_module(tools_mod)
-        _cached_tools_module = tools_mod
-
-    return _cached_tools_module
-
-
-# Lazy import to avoid circular dependency
-def __getattr__(name):
-    tools_mod = _get_tools_module()
-    if hasattr(tools_mod, name):
-        return getattr(tools_mod, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
+# Re-export core classes for backward compatibility
 __all__ = ["OpenAITools", "Tool", "ToolContext", "create_default_tools"]
+
+# Load tools.py from parent src/ directory (renamed to tools_old_backup.py)
+tools_path = Path(__file__).parent.parent / "tools_old_backup.py"
+if tools_path.exists():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("src.tools_old", str(tools_path))
+    if spec and spec.loader:
+        tools_old = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tools_old)
+
+        # Re-export from old module
+        OpenAITools = tools_old.OpenAITools
+        create_default_tools = tools_old.create_default_tools
+        _TERMINAL_TOOL_NAMES = tools_old._TERMINAL_TOOL_NAMES
+        _check_anti_repeat = tools_old._check_anti_repeat
+        create_ask_tool = tools_old.create_ask_tool
+        create_web_search_tool = tools_old.create_web_search_tool
+        create_join_chat_tool = tools_old.create_join_chat_tool
+        create_leave_chat_tool = tools_old.create_leave_chat_tool
+        create_send_telegram_message_tool = tools_old.create_send_telegram_message_tool

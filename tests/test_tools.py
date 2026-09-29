@@ -12,10 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import logging
 
 import src.config as cfgmod
+from src.application.tools import ToolContext
 from src.config import Config
 from src.telegram_client import TelegramChat
 from src.tools import (
-    ToolContext,
     _check_anti_repeat,
     create_join_chat_tool,
     create_leave_chat_tool,
@@ -69,7 +69,7 @@ async def test_join_chat_tool_success(monkeypatch):
             return 999
 
     tool = create_join_chat_tool(FakeTelegram())
-    ctx = ToolContext(args={"invite_link": "https://t.me/+abc123"}, logger=logging.getLogger("test"), temporary_context=[])
+    ctx = ToolContext(args={"invite_link": "https://t.me/+abc123"}, logger=logging.getLogger("test"), conversation_history=[])
     result = await tool.handler(ctx)
     assert "999" in result
 
@@ -81,7 +81,7 @@ async def test_join_chat_tool_failure():
             raise RuntimeError("invite link expired")
 
     tool = create_join_chat_tool(FakeTelegram())
-    ctx = ToolContext(args={"invite_link": "https://t.me/+dead"}, logger=logging.getLogger("test"), temporary_context=[])
+    ctx = ToolContext(args={"invite_link": "https://t.me/+dead"}, logger=logging.getLogger("test"), conversation_history=[])
     result = await tool.handler(ctx)
     assert "Error" in result
 
@@ -95,7 +95,7 @@ async def test_leave_chat_tool():
             calls.append(chat_id)
 
     tool = create_leave_chat_tool(FakeTelegram())
-    ctx = ToolContext(args={"chat_id": 555}, logger=logging.getLogger("test"), temporary_context=[])
+    ctx = ToolContext(args={"chat_id": 555}, logger=logging.getLogger("test"), conversation_history=[])
     result = await tool.handler(ctx)
     assert calls == [555]
     assert "555" in result
@@ -115,7 +115,7 @@ async def test_send_telegram_message_rejects_mismatched_chat_id():
     ctx = ToolContext(
         args={"text": "hi", "chat_id": 999},
         logger=logging.getLogger("test"),
-        temporary_context=[],
+        conversation_history=[],
     )
     result = await tool.handler(ctx)
     assert "Error" in result
@@ -139,7 +139,7 @@ async def test_send_telegram_message_rejects_reply_to_outside_history():
     ctx = ToolContext(
         args={"text": "hi", "reply_to": 555},
         logger=logging.getLogger("test"),
-        temporary_context=[],
+        conversation_history=[],
     )
     result = await tool.handler(ctx)
     assert "Error" in result
@@ -169,7 +169,7 @@ async def test_send_telegram_message_allows_reply_to_within_history():
     ctx = ToolContext(
         args={"text": "hi", "reply_to": 555},
         logger=logging.getLogger("test"),
-        temporary_context=[],
+        conversation_history=[],
     )
     result = await tool.handler(ctx)
     assert result["reply_to_message_id"] == 555

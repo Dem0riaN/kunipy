@@ -104,6 +104,7 @@ class App:
                     diary_dump_service=self._deps.diary_dump_service,
                     diary_context_injector=self._deps.diary_context_injector,  # Phase 4
                     working_memory_update_service=self._deps.working_memory_update_service,
+                    media_service=self._deps.media_service,  # Sprint 3
                 )
                 for i in range(self._deps.config.worker_count)
             ]
@@ -122,6 +123,7 @@ class App:
                     diary_dump_service=self._deps.diary_dump_service,  # Phase 3
                     diary_context_injector=self._deps.diary_context_injector,  # Phase 4
                     working_memory_update_service=self._deps.working_memory_update_service,
+                    media_service=self._deps.media_service,  # Sprint 3
                 )
                 for i in range(self._deps.config.worker_count)
             ]
@@ -173,10 +175,19 @@ class App:
                 if task:
                     self._lifecycle.add_background_task(task, "sleep-scheduler")
 
+            # Start proxy context persistence (Phase 4)
+            if self._deps.proxy_context_persistence:
+                await self._deps.proxy_context_persistence.start()
+                logger.info("Proxy context persistence started")
+
             # Start proxy server if enabled
             if self._deps.config.proxy_enabled:
                 logger.info(f"Proxy enabled, starting server on port {self._deps.config.proxy_port}")
-                await self._start_proxy_server()
+                try:
+                    await self._start_proxy_server()
+                except Exception:
+                    logger.exception("Proxy server startup failed, continuing without proxy")
+                    # Don't stop the app if proxy fails to start
 
             # Start metrics server if enabled
             if self._deps.config.metrics_enabled:
@@ -238,6 +249,14 @@ class App:
             except Exception:
                 logger.exception("Desktop shutdown failed (ignored)")
 
+        # Stop proxy context persistence (Phase 4)
+        if self._deps and self._deps.proxy_context_persistence:
+            try:
+                await self._deps.proxy_context_persistence.stop()
+                logger.info("Proxy context persistence stopped")
+            except Exception:
+                logger.exception("Proxy context persistence shutdown failed (ignored)")
+
         # Dump remaining worker context to diary
         if self._deps.diary and self._worker_orchestrator:
             await self._dump_worker_context()
@@ -253,7 +272,7 @@ class App:
                     if task.get_name() == "proxy-server":
                         try:
                             await asyncio.wait_for(task, timeout=2.0)
-                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                        except (TimeoutError, asyncio.CancelledError):
                             pass
                         break
 
@@ -308,22 +327,51 @@ class App:
 
     async def _start_proxy_server(self) -> None:
         """Start OpenAI-compatible proxy server."""
-        import uvicorn
+        try:
+            import uvicorn
 
-        from .proxy_server import create_proxy_app
+            from .application.proxy import create_proxy_application
 
-        app = create_proxy_app(self._deps.diary)
-        config = uvicorn.Config(
-            app,
-            host="0.0.0.0",
-            port=self._deps.config.proxy_port,
-            log_level="warning",
-        )
-        server = uvicorn.Server(config)
-        self._proxy_server = server
-        task = asyncio.create_task(server.serve(), name="proxy-server")
-        self._lifecycle.add_background_task(task, "proxy-server")
-        logger.info(f"Proxy server started on port {self._deps.config.proxy_port}")
+            # Phase 5: Pass Phase 5 components to proxy application
+            app = create_proxy_application(
+                session_manager=self._deps.proxy_session_manager,
+                message_injector=None,  # Created internally
+                tool_provider=None,  # Created internally
+                request_tracer=None,  # Created internally
+                wm_store=self._deps.working_memory if hasattr(self._deps, 'working_memory') else None,
+                injector=self._deps.diary_context_injector,
+                user_context_manager=self._deps.proxy_user_context_manager,
+                rate_limiter=self._deps.proxy_rate_limiter,
+                upstream_router=self._deps.proxy_upstream_router,
+            )
+
+            config = uvicorn.Config(
+                app,
+                host="0.0.0.0",
+                port=self._deps.config.proxy_port,
+                log_level="warning",
+            )
+            server = uvicorn.Server(config)
+            self._proxy_server = server  # Store in App instance, not deps
+
+            # Start server in background without blocking
+            async def run_server():
+                """Run uvicorn server."""
+                await server.serve()
+
+            task = asyncio.create_task(run_server(), name="proxy-server")
+            self._lifecycle.add_background_task(task, "proxy-server")
+
+            # Give server time to bind to port
+            for _ in range(10):
+                if server.started:
+                    break
+                await asyncio.sleep(0.05)
+
+            logger.info(f"Proxy server started on port {self._deps.config.proxy_port}")
+        except Exception:
+            logger.exception("Failed to start proxy server")
+            raise
 
     async def _start_metrics_server(self) -> None:
         """Start Prometheus metrics endpoint."""
@@ -355,7 +403,7 @@ class App:
             all_chats: dict[int, list] = {}
             for worker in self._worker_orchestrator.workers:
                 # Snapshot: worker tasks may still be alive and mutating the dict
-                for chat_id, messages in list(worker.temporary_context.items()):
+                for chat_id, messages in list(worker.conversation_history.items()):
                     if messages:
                         all_chats[chat_id] = messages
             if all_chats:
@@ -382,7 +430,7 @@ class App:
 
         for worker in self._worker_orchestrator.workers:
             # Snapshot: worker tasks may still be alive and mutating the dict
-            for chat_id, messages in list(worker.temporary_context.items()):
+            for chat_id, messages in list(worker.conversation_history.items()):
                 if not messages:
                     continue
 

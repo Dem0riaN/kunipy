@@ -85,20 +85,45 @@ class MemoryFormationService:
         if not messages:
             return []
 
+        # Consolidation logging level
+        log_level = self.config.consolidation_logging
+
+        if log_level != "none":
+            logger.info("=" * 60)
+            logger.info("=== Memory Formation Started ===")
+            logger.info(f"Input: {len(messages)} messages from chat {chat_id}")
+
         # Format conversation for LLM
         conversation_text = self._format_conversation(messages)
 
+        if log_level == "debug":
+            logger.debug(f"Formatted conversation: {len(conversation_text)} chars")
+            logger.debug(f"Conversation preview: {conversation_text[:300]}...")
+
         # Call LLM to extract memories
         try:
+            if log_level in ("detailed", "debug"):
+                logger.info("Calling LLM for memory extraction...")
+
             extracted = await self._call_llm_extraction(conversation_text)
+
+            if log_level in ("summary", "detailed", "debug"):
+                logger.info(f"LLM extracted {len(extracted)} raw memory items")
+
         except Exception as e:
             logger.error(f"Memory extraction failed: {e}")
+            if log_level != "none":
+                logger.info("=== Memory Formation Complete: Failed ===")
+                logger.info("=" * 60)
             return []
 
         # Convert to MemoryPiece objects
         memory_pieces = []
-        for item in extracted:
+        for idx, item in enumerate(extracted, 1):
             try:
+                if log_level == "debug":
+                    logger.debug(f"Processing memory item {idx}/{len(extracted)}: {item.get('kind', 'unknown')}")
+
                 piece = self._create_memory_piece(
                     item=item,
                     user_id=user_id,
@@ -107,11 +132,30 @@ class MemoryFormationService:
                     source_messages=messages,
                 )
                 memory_pieces.append(piece)
+
+                if log_level == "debug":
+                    logger.debug(
+                        f"  Created memory piece: kind={piece.kind}, "
+                        f"importance={piece.importance}, confidence={piece.confidence}"
+                    )
+
             except Exception as e:
-                logger.warning(f"Failed to create memory piece: {e}")
+                logger.warning(f"Failed to create memory piece {idx}: {e}")
                 continue
 
-        logger.info(f"Extracted {len(memory_pieces)} memory pieces from {len(messages)} messages")
+        if log_level != "none":
+            logger.info(
+                f"=== Memory Formation Complete: {len(memory_pieces)} pieces created ==="
+            )
+            if log_level in ("detailed", "debug"):
+                # Group by kind
+                by_kind: dict[str, int] = {}
+                for piece in memory_pieces:
+                    kind = piece.kind.value if hasattr(piece.kind, 'value') else str(piece.kind)
+                    by_kind[kind] = by_kind.get(kind, 0) + 1
+                logger.info(f"Memory pieces by kind: {by_kind}")
+            logger.info("=" * 60)
+
         return memory_pieces
 
     async def extract_from_single_message(

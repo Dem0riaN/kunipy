@@ -1,5 +1,11 @@
 """OpenAI-compatible transparent proxy server for kunipy.
 
+DEPRECATED: This module is a compatibility layer for the modular proxy architecture.
+New code should use application.proxy module directly.
+
+Legacy API preserved for backward compatibility.
+See: src/application/proxy/ for modular implementation.
+
 Mirrors the original C++ `kuni`'s proxy server: sits between an external AI
 client (e.g. an IDE chat plugin) and an upstream OpenAI-compatible LLM
 endpoint.
@@ -27,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -35,25 +40,14 @@ import aiohttp
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+# Import from application.tools module
 from .character import build_system_prompt
 from .config import Config, EndpointAndModel, get_config
 from .diary import Diary
 from .infrastructure.memory.diary_context_injector import DiaryContextInjector
 from .infrastructure.memory.working_memory_file_store import WorkingMemoryFileStore
 from .openai_chat import Message, OpenAIChat
-
-# Import from parent-level tools.py, not tools package
-_tools_mod = import_module('.tools', 'src')
-if hasattr(_tools_mod, '__path__'):
-    # It's a package, need to get the module
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("src.tools_module", "src/tools.py")
-    _tools_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(_tools_mod)
-OpenAITools = _tools_mod.OpenAITools
-Tool = _tools_mod.Tool
-create_ask_tool = _tools_mod.create_ask_tool
-create_web_search_tool = _tools_mod.create_web_search_tool
+from .tools import OpenAITools, create_ask_tool, create_web_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -177,8 +171,41 @@ def create_proxy_app(
     wm_store: WorkingMemoryFileStore | None = None,
     injector: DiaryContextInjector | None = None,
 ) -> FastAPI:
-    """Build the FastAPI app implementing the proxy server."""
-    app = FastAPI(title="kunipy proxy")
+    """Build the FastAPI app implementing the proxy server.
+
+    DEPRECATED: Use application.proxy.create_proxy_application instead.
+    This is a compatibility wrapper that delegates to the modular implementation.
+
+    Args:
+        diary: Diary instance (optional)
+        wm_store: Working memory store (optional)
+        injector: Diary context injector (optional)
+
+    Returns:
+        FastAPI application
+    """
+    # Delegate to new modular implementation
+    from .application.proxy import create_proxy_application
+
+    logger.info("Using modular proxy implementation (Phase 1)")
+
+    return create_proxy_application(
+        wm_store=wm_store,
+        injector=injector,
+    )
+
+
+def create_proxy_app_legacy(
+    diary: Diary | None,
+    wm_store: WorkingMemoryFileStore | None = None,
+    injector: DiaryContextInjector | None = None,
+) -> FastAPI:
+    """Legacy implementation preserved for reference.
+
+    DO NOT USE: This is the old monolithic implementation.
+    Kept for comparison and testing purposes only.
+    """
+    app = FastAPI(title="kunipy proxy (legacy)")
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:

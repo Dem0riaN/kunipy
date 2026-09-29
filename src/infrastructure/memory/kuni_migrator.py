@@ -307,7 +307,7 @@ class KuniMigrator:
 
         try:
             # Try parsing as ISO format
-            return datetime.fromisoformat(last_used.replace("Z", "+00:00"))
+            return datetime.fromisoformat(last_used)
         except (ValueError, AttributeError):
             return datetime.now(UTC)
 

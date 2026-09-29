@@ -101,26 +101,47 @@ class DiaryDumpService:
         token_count = self._counter.count_messages(messages)
         threshold = self._config.diary_context_token_threshold
 
+        # Consolidation logging level
+        log_level = self._config.consolidation_logging
+
         if token_count <= threshold:
             # Below threshold, no dump needed
+            if log_level == "debug":
+                logger.debug(
+                    f"Diary auto-dump: token count {token_count} below threshold {threshold} for chat {chat_id}"
+                )
             return messages
 
         # Check cooldown
         now = time.time()
         last_dump = self._last_dump_time.get(chat_id, 0)
         if now - last_dump < self._min_dump_interval:
-            logger.debug(f"Dump cooldown active for chat {chat_id}")
+            if log_level == "debug":
+                logger.debug(f"Diary auto-dump: cooldown active for chat {chat_id}")
             return messages
 
-        logger.info(
-            f"Token count {token_count} exceeds threshold {threshold} "
-            f"for chat {chat_id}, dumping to diary"
-        )
+        if log_level != "none":
+            logger.info("=" * 60)
+            logger.info("=== Diary Auto-Dump Triggered ===")
+            logger.info(f"Chat ID: {chat_id}")
+            logger.info(f"Token count: {token_count} (threshold: {threshold})")
+            logger.info(f"Message count: {len(messages)}")
 
         try:
+            if log_level in ("detailed", "debug"):
+                logger.info("Summarizing conversation for diary...")
+
             # Summarize and save to diary
             entries = await self._summarize_for_diary(messages)
-            for entry_text in entries:
+
+            if log_level in ("detailed", "debug"):
+                logger.info(f"Generated {len(entries)} diary entries from conversation")
+
+            for i, entry_text in enumerate(entries, 1):
+                if log_level == "debug":
+                    logger.debug(f"Saving diary entry {i}/{len(entries)}: {len(entry_text)} chars")
+                    logger.debug(f"Entry preview: {entry_text[:200]}...")
+
                 await self._diary.add_entry(
                     text=entry_text,
                     confidence=0.7,
@@ -137,11 +158,21 @@ class DiaryDumpService:
             keep_count = 15
             if len(messages) > keep_count:
                 trimmed = messages[-keep_count:]
-                logger.info(f"Trimmed history from {len(messages)} to {len(trimmed)} messages")
+                if log_level in ("summary", "detailed", "debug"):
+                    logger.info(f"Trimmed history: {len(messages)} → {len(trimmed)} messages")
+
+                if log_level != "none":
+                    logger.info(f"=== Diary Auto-Dump Complete: {len(entries)} entries saved ===")
+                    logger.info("=" * 60)
+
                 return trimmed
 
-        except Exception as e:
-            logger.exception(f"Failed to dump conversation to diary: {e}")
+            if log_level != "none":
+                logger.info(f"=== Diary Auto-Dump Complete: {len(entries)} entries saved ===")
+                logger.info("=" * 60)
+
+        except Exception:
+            logger.exception("Failed to dump conversation to diary")
 
         return messages
 

@@ -17,7 +17,7 @@ class MockWorker:
 
     def __init__(self, name: str):
         self.name = name
-        self.temporary_context = {}
+        self.conversation_history = {}
         self._running = False
         self._run_called = False
         self._wake_up_called = False
@@ -121,7 +121,7 @@ async def test_orchestrator_stop(orchestrator, mock_workers):
 
     # Verify all workers' context cleared
     for worker in mock_workers:
-        assert len(worker.temporary_context) == 0
+        assert len(worker.conversation_history) == 0
 
 
 @pytest.mark.asyncio
@@ -183,7 +183,7 @@ async def test_orchestrator_handles_worker_exception(notification_manager):
     class FailingWorker:
         def __init__(self, name: str):
             self.name = name
-            self.temporary_context = {}
+            self.conversation_history = {}
 
         async def run(self):
             raise RuntimeError("Worker failed")
@@ -229,7 +229,7 @@ async def test_orchestrator_context_cleanup(orchestrator, mock_workers):
     """Test that worker context is cleared on stop."""
     # Add some context to workers
     for i, worker in enumerate(mock_workers):
-        worker.temporary_context[i] = [f"message-{i}"]
+        worker.conversation_history[i] = [f"message-{i}"]
 
     await orchestrator.start()
     await asyncio.sleep(0.1)
@@ -237,7 +237,7 @@ async def test_orchestrator_context_cleanup(orchestrator, mock_workers):
 
     # Verify context cleared
     for worker in mock_workers:
-        assert len(worker.temporary_context) == 0
+        assert len(worker.conversation_history) == 0
 
 
 @pytest.mark.asyncio
@@ -286,7 +286,7 @@ async def test_orchestrator_lifecycle_integration(notification_manager):
     # Verify cleanup
     assert len(orchestrator._tasks) == 0
     for worker in workers:
-        assert len(worker.temporary_context) == 0
+        assert len(worker.conversation_history) == 0
 
 
 if __name__ == "__main__":

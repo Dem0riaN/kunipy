@@ -132,41 +132,47 @@ class MemoryService:
         if metadata is None:
             metadata = {}
 
-        msg = ConversationMessage(
-            message_id=message_id,
-            user_id=user_id,
-            chat_id=chat_id,
-            channel=channel,
-            timestamp=datetime.now(UTC),
-            role=role,
-            content=content,
-            reply_to_message_id=reply_to_message_id,
-            metadata=metadata,
-        )
+        # Graceful degradation: continue without memory storage on failure (Sprint 3 Task 3)
+        try:
+            msg = ConversationMessage(
+                message_id=message_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                channel=channel,
+                timestamp=datetime.now(UTC),
+                role=role,
+                content=content,
+                reply_to_message_id=reply_to_message_id,
+                metadata=metadata,
+            )
 
-        # Ensure user exists
-        await self.user_repo.get_or_create_user(
-            user_id=user_id,
-            display_name=f"User {user_id}"
-        )
+            # Ensure user exists
+            await self.user_repo.get_or_create_user(
+                user_id=user_id,
+                display_name=f"User {user_id}"
+            )
 
-        # Ensure chat exists
-        chat_type = metadata.get("chat_type", "private")
-        await self.chat_repo.get_or_create_chat(
-            chat_id=chat_id,
-            chat_type=chat_type,
-            title=metadata.get("chat_title"),
-        )
+            # Ensure chat exists
+            chat_type = metadata.get("chat_type", "private")
+            await self.chat_repo.get_or_create_chat(
+                chat_id=chat_id,
+                chat_type=chat_type,
+                title=metadata.get("chat_title"),
+            )
 
-        # Store message in SQLite
-        await self.conversation_repo.store_message(msg)
+            # Store message in SQLite
+            await self.conversation_repo.store_message(msg)
 
-        # Update working memory last_interaction via in-memory WorkingMemory
-        await self.working_memory.update_context(
-            user_id=user_id,
-            chat_id=chat_id,
-            updates={"channel": channel},
-        )
+            # Update working memory last_interaction via in-memory WorkingMemory
+            await self.working_memory.update_context(
+                user_id=user_id,
+                chat_id=chat_id,
+                updates={"channel": channel},
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to store message to memory: {e}")
+            # Graceful degradation: conversation can continue without memory storage
 
         return message_id
 
@@ -401,9 +407,8 @@ class MemoryService:
         scopes = [MemoryScope.GLOBAL, MemoryScope.CHAT, MemoryScope.USER]
 
         # Desktop owner gets PRIVATE scope
-        if self.config.desktop_owner_telegram_id:
-            if user_id == self.config.desktop_owner_telegram_id:
-                scopes.append(MemoryScope.PRIVATE)
+        if self.config.desktop_owner_telegram_id and user_id == self.config.desktop_owner_telegram_id:
+            scopes.append(MemoryScope.PRIVATE)
 
         return scopes
 

@@ -94,37 +94,97 @@ class SleepConsolidationService:
             logger.warning(msg)
             return ConsolidationResult(errors=[msg])
 
+        # Consolidation logging level
+        log_level = self._config.consolidation_logging
+
         async with self._lock:
+            if log_level != "none":
+                logger.info("=" * 60)
+                logger.info("=== Sleep Consolidation Started ===")
+                logger.info(f"Logging level: {log_level}")
+                logger.info("=" * 60)
+
             entries = await self._pick_entries()
             if len(entries) < 2:
-                logger.info("Consolidation: not enough mutable entries")
+                if log_level != "none":
+                    logger.info("Consolidation: not enough mutable entries (<2)")
+                    logger.info("=== Sleep Consolidation Complete: Skipped ===")
                 return ConsolidationResult()
 
+            if log_level in ("summary", "detailed", "debug"):
+                logger.info(f"Selected {len(entries)} mutable entries for consolidation")
+
             batches = await self._group_related(entries)
-            logger.info(
-                f"Consolidation: {len(entries)} entries in {len(batches)} batches"
-            )
+
+            if log_level in ("summary", "detailed", "debug"):
+                logger.info(
+                    f"Grouped into {len(batches)} batches (max {self.MAX_BATCHES_PER_RUN} will be processed)"
+                )
+
+            if log_level == "debug":
+                for i, batch in enumerate(batches[:self.MAX_BATCHES_PER_RUN], 1):
+                    logger.debug(f"Batch {i}: {len(batch)} entries, IDs: {[e.id for e in batch]}")
 
             result = ConsolidationResult()
-            for batch in batches[: self.MAX_BATCHES_PER_RUN]:
+            batches_to_process = batches[: self.MAX_BATCHES_PER_RUN]
+
+            for batch_idx, batch in enumerate(batches_to_process, 1):
+                if log_level in ("detailed", "debug"):
+                    logger.info(f"Processing batch {batch_idx}/{len(batches_to_process)}: {len(batch)} entries")
+
                 try:
+                    if log_level == "debug":
+                        logger.debug(f"Calling LLM for batch {batch_idx}...")
+
                     pieces = await self._run_llm(batch)
+
+                    if log_level == "debug":
+                        logger.debug(f"LLM returned {len(pieces)} consolidated pieces")
+                        for i, piece in enumerate(pieces, 1):
+                            # ConsolidatedEntry uses 'body' not 'text'
+                            logger.debug(f"  Piece {i}: {len(piece.body)} chars, confidence={piece.confidence}")
+
                 except Exception as e:
-                    logger.exception(f"Consolidation LLM call failed for batch: {e}")
-                    result.errors.append(f"llm: {e}")
+                    logger.exception(f"Consolidation LLM call failed for batch {batch_idx}")
+                    result.errors.append(f"llm batch {batch_idx}: {e}")
                     continue
 
                 try:
+                    if log_level == "debug":
+                        logger.debug(f"Applying changes for batch {batch_idx}...")
+
                     batch_result = await self._apply_changes(batch, pieces)
+
+                    if log_level in ("detailed", "debug"):
+                        logger.info(
+                            f"Batch {batch_idx} complete: "
+                            f"+{batch_result.added} added, "
+                            f"~{batch_result.updated} updated, "
+                            f"-{batch_result.deleted} deleted"
+                        )
+
                 except Exception as e:
-                    logger.exception(f"Failed to apply consolidation changes: {e}")
-                    result.errors.append(f"apply: {e}")
+                    logger.exception(f"Failed to apply consolidation changes for batch {batch_idx}")
+                    result.errors.append(f"apply batch {batch_idx}: {e}")
                     continue
 
                 result.added += batch_result.added
                 result.updated += batch_result.updated
                 result.deleted += batch_result.deleted
                 result.errors.extend(batch_result.errors)
+
+            if log_level != "none":
+                logger.info("=" * 60)
+                logger.info(
+                    f"=== Sleep Consolidation Complete: "
+                    f"+{result.added} added, ~{result.updated} updated, -{result.deleted} deleted ==="
+                )
+                if result.errors:
+                    logger.warning(f"Consolidation errors: {len(result.errors)}")
+                    if log_level == "debug":
+                        for err in result.errors:
+                            logger.debug(f"  Error: {err}")
+                logger.info("=" * 60)
 
             return result
 

@@ -52,16 +52,25 @@ class DiaryContextInjector:
         self._max_system_entries = max_system_entries
         self._max_message_entries = max_message_entries
 
-    async def inject_into_system_prompt(self, query_text: str) -> str:
+    async def inject_into_system_prompt(self, query_text: str | list[dict]) -> str:
         """Query diary and format as <related_memories> for system prompt.
 
         Args:
-            query_text: User's message to query diary with
+            query_text: User's message to query diary with (str or multimodal list)
 
         Returns:
             Formatted <related_memories> block (empty string if no entries)
         """
-        if not query_text.strip():
+        # Handle multimodal content - extract text from list
+        if isinstance(query_text, list):
+            # Extract text from multimodal content
+            text_parts = []
+            for item in query_text:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            query_text = " ".join(text_parts)
+
+        if not query_text or not query_text.strip():
             return ""
 
         # Get embedding for query
@@ -104,7 +113,7 @@ class DiaryContextInjector:
     async def inject_into_messages(
         self,
         messages: list[Any],
-        user_query: str,
+        user_query: str | list[dict],
     ) -> list[Any]:
         """Query diary and inject full-text entries as <your_diary_page>.
 
@@ -112,12 +121,20 @@ class DiaryContextInjector:
 
         Args:
             messages: Current conversation message list
-            user_query: User's message to query diary with
+            user_query: User's message to query diary with (str or multimodal list)
 
         Returns:
             Message list with <your_diary_page> injected (or original if no entries)
         """
-        if not user_query.strip():
+        # Handle multimodal content - extract text from list
+        if isinstance(user_query, list):
+            text_parts = []
+            for item in user_query:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            user_query = " ".join(text_parts)
+
+        if not user_query or not user_query.strip():
             return messages
 
         # Get embedding for query

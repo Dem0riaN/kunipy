@@ -41,7 +41,7 @@ def _load_diary():
 async def cmd_list(args: argparse.Namespace) -> int:
     from src.diary import Diary  # noqa: F401
 
-    diary, config = _load_diary()
+    diary, _config = _load_diary()
     entries = await diary.get_all_entries()
 
     key = args.sort

@@ -259,7 +259,7 @@ async def test_app_context_dumping_on_shutdown(minimal_config):
         # Add some mock context to worker
         from src.openai_chat import Message
         worker = app._worker_orchestrator.workers[0]
-        worker.temporary_context[123] = [
+        worker.conversation_history[123] = [
             Message(role="user", content="test message")
         ]
 
@@ -270,7 +270,7 @@ async def test_app_context_dumping_on_shutdown(minimal_config):
         await app.stop()
 
         # Verify context was cleared
-        assert len(worker.temporary_context) == 0
+        assert len(worker.conversation_history) == 0
 
         try:
             await asyncio.wait_for(start_task, timeout=1.0)

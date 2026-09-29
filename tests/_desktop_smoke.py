@@ -1,10 +1,14 @@
 """Smoke test for desktop stubs."""
-import asyncio, sys, os
+import asyncio
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.desktop import DesktopCharacter
+from src.desktop.bridges import NoOpLLMBridge, NoOpMemoryBridge
 from src.desktop.config import DesktopConfig
-from src.desktop.bridges import NoOpMemoryBridge, NoOpLLMBridge
+
 
 async def main():
     # Default config: disabled

@@ -4,8 +4,11 @@ This module handles:
 - Transcription of voice messages
 - Multimodal content creation for photos and stickers
 - Text document extraction via MediaExtractorRegistry
+
+Enhanced with retry logic and graceful degradation (Sprint 3 Task 3).
 """
 
+import asyncio
 import logging
 
 from ..config import Config
@@ -79,23 +82,36 @@ class MediaService:
             logger.warning("Voice message missing file_id")
             return ""
 
-        try:
-            # Download voice file
-            audio_bytes = await self._telegram.download_file_bytes(file_id)
-            if not audio_bytes:
-                logger.warning(f"Failed to download voice file {file_id}")
-                return ""
+        # Retry logic with exponential backoff (Sprint 3 Task 3)
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                # Download voice file
+                audio_bytes = await self._telegram.download_file_bytes(file_id)
+                if not audio_bytes:
+                    logger.warning(f"Failed to download voice file {file_id}")
+                    return ""
 
-            # Transcribe (format="ogg" for Telegram voice messages)
-            text = await self._openai.transcribe_audio(audio_bytes, format="ogg")
-            if not text:
-                return ""
+                # Transcribe (format="ogg" for Telegram voice messages)
+                text = await self._openai.transcribe_audio(audio_bytes, format="ogg")
+                if not text:
+                    return ""
 
-            return f"[voice message] {text}"
+                return f"[voice message] {text}"
 
-        except (ValueError, KeyError, TypeError, RuntimeError) as e:
-            logger.error(f"Voice transcription error: {e}")
-            return ""
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError, TimeoutError) as e:
+                if attempt == max_retries:
+                    logger.error(f"Voice transcription failed after {max_retries} retries: {e}")
+                    # Graceful degradation: return placeholder
+                    return "[голосовое сообщение - ошибка транскрипции]"
+
+                logger.warning(
+                    f"Voice transcription attempt {attempt + 1}/{max_retries + 1} failed: {e}, retrying..."
+                )
+                await asyncio.sleep(0.5 * (2 ** attempt))
+
+        # Fallback (should not reach here)
+        return "[голосовое сообщение - ошибка транскрипции]"
 
     async def get_image_bytes_and_mime(self, msg: TelegramMessage) -> tuple[bytes, str] | None:
         """Download image bytes from photo/sticker message.
@@ -116,35 +132,47 @@ class MediaService:
             logger.warning(f"Media message missing file_id: {msg.media.get('type')}")
             return None
 
-        try:
-            # Download file
-            image_bytes = await self._telegram.download_file_bytes(file_id)
-            if not image_bytes:
-                logger.warning(f"Failed to download media file {file_id}")
-                return None
-
-            # Determine MIME type
-            media_type = msg.media.get("type")
-            if media_type == "sticker":
-                # Static stickers are typically WebP
-                if not msg.media.get("is_animated") and not msg.media.get("is_video"):
-                    mime_type = "image/webp"
-                else:
-                    # Animated/video stickers not supported yet
-                    logger.debug("Animated/video sticker not supported for vision")
+        # Retry logic with exponential backoff (Sprint 3 Task 3)
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                # Download file
+                image_bytes = await self._telegram.download_file_bytes(file_id)
+                if not image_bytes:
+                    logger.warning(f"Failed to download media file {file_id}")
                     return None
-            elif media_type == "photo":
-                # Photos are typically JPEG
-                mime_type = "image/jpeg"
-            else:
-                logger.warning(f"Unsupported media type for vision: {media_type}")
-                return None
 
-            return (image_bytes, mime_type)
+                # Determine MIME type
+                media_type = msg.media.get("type")
+                if media_type == "sticker":
+                    # Static stickers are typically WebP
+                    if not msg.media.get("is_animated") and not msg.media.get("is_video"):
+                        mime_type = "image/webp"
+                    else:
+                        # Animated/video stickers not supported yet
+                        logger.debug("Animated/video sticker not supported for vision")
+                        return None
+                elif media_type == "photo":
+                    # Photos are typically JPEG
+                    mime_type = "image/jpeg"
+                else:
+                    logger.warning(f"Unsupported media type for vision: {media_type}")
+                    return None
 
-        except (ValueError, KeyError, TypeError, RuntimeError) as e:
-            logger.error(f"Image download error: {e}")
-            return None
+                return (image_bytes, mime_type)
+
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError, TimeoutError) as e:
+                if attempt == max_retries:
+                    logger.error(f"Image download failed after {max_retries} retries: {e}")
+                    return None
+
+                logger.warning(
+                    f"Image download attempt {attempt + 1}/{max_retries + 1} failed: {e}, retrying..."
+                )
+                await asyncio.sleep(0.5 * (2 ** attempt))
+
+        # Fallback (should not reach here)
+        return None
 
     async def read_text_document(self, msg: TelegramMessage) -> str:
         """Download and extract text document content.

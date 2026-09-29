@@ -10,8 +10,7 @@ import logging
 import random
 from typing import Any
 
-import src.tools as tools_module
-
+from .application.tools import TERMINAL_TOOL_NAMES, create_default_registry
 from .character import build_system_prompt
 from .config import Config
 from .diary import Diary
@@ -49,6 +48,7 @@ class Worker:
         diary_dump_service=None,  # Phase 3: Conversation→diary pipeline
         diary_context_injector=None,  # Phase 4: Auto-RAG injection
         working_memory_update_service=None,  # Autonomy: Working memory extraction
+        media_service=None,  # Sprint 3: Media service injection
     ):
         """Initialize worker with dependencies.
 
@@ -64,6 +64,7 @@ class Worker:
             diary_dump_service: Conversation→diary dump service (optional, Phase 3)
             diary_context_injector: Auto-RAG diary injector (optional, Phase 4)
             working_memory_update_service: Working memory update service (optional)
+            media_service: Media service for image/audio processing (optional)
         """
         self.name = name
         self.openai = openai
@@ -76,13 +77,14 @@ class Worker:
         self._diary_dump_service = diary_dump_service  # Phase 3
         self._diary_context_injector = diary_context_injector  # Phase 4
         self._working_memory_update_service = working_memory_update_service  # Autonomy
+        self._media_service = media_service  # Sprint 3
 
         self._running = False
         self._sleeping = False
         self._wake_event = asyncio.Event()
 
         # Per-chat conversation history
-        self.temporary_context: dict[int, list[Message]] = {}
+        self.conversation_history: dict[int, list[Message]] = {}
 
         # Track last working memory update time per chat
         self._last_wm_update: dict[int, float] = {}
@@ -130,7 +132,7 @@ class Worker:
         logger.info(f"Worker {self.name} stopped")
 
     async def _process_notification(self, notification: Notification) -> None:
-        """Process a single notification end-to-end."""
+        """Process a single notification end-to-end with graceful degradation."""
         logger.info(f"Processing notification: {notification.message[:100]}...")
 
         # Extract chat_id from pin
@@ -149,6 +151,16 @@ class Worker:
             final_text = await self._generate_response(notification, chat_id)
         except Exception:
             logger.exception(f"Worker {self.name} failed to generate response")
+
+            # Graceful degradation: send error notification to user (Sprint 3 Task 3)
+            if self.telegram and chat_id:
+                try:
+                    await self.telegram.send_message(
+                        chat_id=chat_id,
+                        text="Извините, произошла ошибка при обработке сообщения. Попробуйте еще раз.",
+                    )
+                except Exception as send_error:
+                    logger.error(f"Failed to send error notification: {send_error}")
             return
 
         # Log if LLM produced text but didn't call send_message tool
@@ -187,20 +199,25 @@ class Worker:
                 if media_type in ("photo", "sticker"):
                     # Try to create multimodal content
                     try:
-                        from .application.media_service import MediaService
-                        from .openai_chat import create_multimodal_content
+                        from .application.media.image_processor import ImageProcessor
 
-                        media_service = MediaService(
-                            telegram_client=self.telegram,
-                            openai_client=self.openai,
-                            config=self.config
-                        )
+                        # Use injected media service if available, otherwise create inline
+                        if self._media_service:
+                            result = await self._media_service.get_image_bytes_and_mime(telegram_msg)
+                        else:
+                            # Fallback: create inline (for backward compatibility)
+                            from .application.media_service import MediaService
+                            media_service = MediaService(
+                                telegram_client=self.telegram,
+                                openai_client=self.openai,
+                                config=self.config
+                            )
+                            result = await media_service.get_image_bytes_and_mime(telegram_msg)
 
-                        result = await media_service.get_image_bytes_and_mime(telegram_msg)
                         if result:
                             image_bytes, mime_type = result
                             # Create multimodal content with text + image
-                            user_message_content = create_multimodal_content(
+                            user_message_content = ImageProcessor.create_multimodal_content(
                                 text=notification.message,
                                 image_data=image_bytes,
                                 mime_type=mime_type
@@ -211,7 +228,7 @@ class Worker:
                         # Fall back to text-only
 
         # Maintain per-chat history
-        history = self.temporary_context.setdefault(chat_id, [])
+        history = self.conversation_history.setdefault(chat_id, [])
         history.append(Message(role="user", content=user_message_content))
 
         system_prompt = await self._build_system_prompt(notification)
@@ -222,16 +239,35 @@ class Worker:
         tui_printer = TuiStreamingPrinter()
 
         # Tool-calling loop
+        # OPTIMIZATION: Build registry once before loop (not on every iteration)
+        registry = None
+        tool_schemas = None
+        if self.telegram:
+            # Build registry once with initial history
+            recent_bot_messages = [
+                m.content for m in history
+                if m.role == "assistant" and (m.content or "").strip()
+            ]
+            registry = create_default_registry(
+                telegram=self.telegram,
+                diary=self.diary,
+                openai=self.openai,
+                current_chat=chat,
+                is_admin=is_admin,
+                recent_bot_messages=recent_bot_messages,
+            )
+            tool_schemas = [t.to_dict() for t in registry.get_tool_definitions()]
+
         for iteration in range(MAX_TOOL_ITERATIONS):
-            # Rebuild tools with current history to get fresh recent_bot_messages
-            tools = None
-            tool_schemas = None
-            if self.telegram:
+            # Update recent_bot_messages for anti-repeat check
+            # Only rebuild if we have new assistant messages
+            if self.telegram and iteration > 0:
                 recent_bot_messages = [
                     m.content for m in history
                     if m.role == "assistant" and (m.content or "").strip()
                 ]
-                tools = tools_module.create_default_tools(
+                # Re-register tools with updated history (fast path: only update context)
+                registry = create_default_registry(
                     telegram=self.telegram,
                     diary=self.diary,
                     openai=self.openai,
@@ -239,7 +275,7 @@ class Worker:
                     is_admin=is_admin,
                     recent_bot_messages=recent_bot_messages,
                 )
-                tool_schemas = tools.to_json_schemas()
+                tool_schemas = [t.to_dict() for t in registry.get_tool_definitions()]
 
             # Add messages_epilogue.md to messages before sending to LLM
             from .prompt_loader import build_messages_with_epilogue
@@ -274,6 +310,21 @@ class Worker:
             message = choice.get("message", {})
             content = message.get("content", "")
             tool_calls = message.get("tool_calls", [])
+
+            # Fallback: Parse text-based tool calls if no structured tool_calls
+            # Some LLMs (DeepSeek-R1) output tool calls as text instead of JSON
+            if not tool_calls and content:
+                from .infrastructure.tool_call_parser import extract_thinking_and_calls
+                thinking_text, parsed_calls = extract_thinking_and_calls(content)
+
+                if parsed_calls:
+                    logger.info(
+                        f"Detected {len(parsed_calls)} text-based tool calls, "
+                        f"converting to structured format"
+                    )
+                    tool_calls = parsed_calls
+                    # Replace content with thinking only (remove tool call text)
+                    content = thinking_text
 
             # Log assistant turn
             self._log_assistant_turn(chat_id, content, tool_calls)
@@ -319,7 +370,15 @@ class Worker:
 
                     try:
                         args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                        result = await tools.call(name, args)
+                        # Create ToolContext for registry execution
+                        from .application.tools.registry import ToolContext
+                        tool_ctx = ToolContext(
+                            args={},
+                            logger=logger,
+                            conversation_history=history,
+                            all_tool_calls=tool_calls,
+                        )
+                        result = await registry.execute(name, args, tool_ctx)
                         result_str = str(result) if result is not None else ""
                     except (ValueError, KeyError, TypeError, RuntimeError) as e:
                         result_str = f"Error: {e}"
@@ -333,7 +392,7 @@ class Worker:
 
                     # Detect wait/pause — signal that the LLM is done for this turn
                     # (mirrors C++ kuni Worker.cpp pauseFlag logic)
-                    if name in tools_module._TERMINAL_TOOL_NAMES:
+                    if name in TERMINAL_TOOL_NAMES:
                         should_pause = True
 
                 self._log_tool_results(chat_id, tool_calls, tool_results)
@@ -356,7 +415,7 @@ class Worker:
 
         # Trim history if too long (Phase 3: dump to diary before trimming).
         # maybe_dump() returns the (possibly trimmed) list; assign back into
-        # the SAME list object since `history` is self.temporary_context[chat_id].
+        # the SAME list object since `history` is self.conversation_history[chat_id].
         if len(history) > 20:
             if self._diary_dump_service:
                 trimmed = await self._diary_dump_service.maybe_dump(history, chat_id)
@@ -434,7 +493,7 @@ class Worker:
         if not self._working_memory_update_service:
             return
 
-        messages = self.temporary_context.get(chat_id, [])
+        messages = self.conversation_history.get(chat_id, [])
         if not messages:
             return
 
@@ -466,7 +525,7 @@ class Worker:
         if not self._diary_dump_service:
             return
 
-        messages = self.temporary_context.get(chat_id, [])
+        messages = self.conversation_history.get(chat_id, [])
         if not messages:
             return
 

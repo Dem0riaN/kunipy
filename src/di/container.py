@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..config import Config
 
@@ -33,7 +33,6 @@ from ..interfaces import (
     INotificationManager,
     IOpenAIChat,
     ITelegramClient,
-    ITelegramMessageService,
     IWorkingMemory,
 )
 
@@ -57,7 +56,6 @@ class Dependencies:
 
     # Telegram layer
     telegram_client: ITelegramClient
-    telegram_message_service: ITelegramMessageService
 
     # Memory layer (ТЗ-002 interfaces, stub implementations in Phase 1)
     memory_store: IMemoryStore
@@ -71,6 +69,12 @@ class Dependencies:
 
     # Media extraction (ТЗ-005)
     extractor_registry: MediaExtractorRegistry
+
+    # Media service (Sprint 3: injected into Worker)
+    media_service: Any | None = None  # MediaService
+
+    # Telegram message service (Sprint 3 Task 2: business logic extraction)
+    telegram_message_service: Any | None = None  # TelegramMessageService
 
     # Legacy components (to be refactored)
     diary: Diary | None = None  # Will be refactored to use IMemoryStore
@@ -93,6 +97,17 @@ class Dependencies:
 
     # Proxy server handle (for graceful shutdown, set by App._start_proxy_server)
     _proxy_server: Any | None = None
+
+    # Proxy Phase 1: Session management
+    proxy_session_manager: Any | None = None  # SessionManager
+
+    # Proxy Phase 4: Context persistence
+    proxy_context_persistence: Any | None = None  # ContextPersistence
+
+    # Proxy Phase 5: Multi-user & Multi-upstream
+    proxy_user_context_manager: Any | None = None  # UserContextManager
+    proxy_rate_limiter: Any | None = None  # RateLimiter
+    proxy_upstream_router: Any | None = None  # UpstreamRouter
 
 
 async def create_dependencies(working_dir: Path, config: Config) -> Dependencies:
@@ -327,6 +342,105 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
     )
     logger.info("Working memory update service initialized")
 
+    # Media service (Sprint 3: injected into Worker)
+    from ..application.media_service import MediaService
+    media_service = MediaService(
+        telegram_client=telegram_client,
+        openai_client=openai_chat,
+        config=config,
+    )
+    logger.info("Media service initialized")
+
+    # Telegram message service (Sprint 3 Task 2: business logic extraction)
+    from ..application.telegram_message_service import TelegramMessageService
+    telegram_message_service = TelegramMessageService(
+        telegram_client=telegram_client,
+        memory_store=memory_store,
+        config=config,
+    )
+    logger.info("Telegram message service initialized")
+
+    # Proxy session manager and context persistence (Phase 4)
+    proxy_session_manager = None
+    proxy_context_persistence = None
+    proxy_user_context_manager = None
+    proxy_rate_limiter = None
+    proxy_upstream_router = None
+
+    if config.proxy_enabled:
+        from ..application.proxy import (
+            ContextPersistence,
+            RateLimitConfig,
+            RateLimiter,
+            SessionManager,
+            UserContextManager,
+        )
+        from ..infrastructure.proxy import UpstreamConfig, UpstreamRouter
+
+        proxy_session_manager = SessionManager(
+            session_timeout_minutes=config.proxy_session_timeout_minutes
+        )
+        logger.info("Proxy session manager initialized")
+
+        # Phase 5: User context manager (multi-user isolation)
+        proxy_user_context_manager = UserContextManager(
+            session_manager=proxy_session_manager
+        )
+        logger.info("Proxy user context manager initialized")
+
+        # Phase 5: Rate limiter (per-user protection)
+        if config.proxy_rate_limit_enabled:
+            rate_limit_config = RateLimitConfig(
+                requests_per_minute=config.proxy_rate_limit_requests_per_minute,
+                requests_per_hour=config.proxy_rate_limit_requests_per_hour,
+                burst_size=config.proxy_rate_limit_burst_size,
+            )
+            proxy_rate_limiter = RateLimiter(rate_limit_config)
+            logger.info("Proxy rate limiter initialized")
+
+        # Phase 5: Upstream router (multi-upstream routing)
+        from ..config import EndpointAndModel
+
+        # Build upstream configs from TOML array
+        upstreams = []
+        for upstream_cfg in config.proxy_upstreams:
+            endpoint = EndpointAndModel(
+                model=upstream_cfg.get("model", ""),
+                endpoint_base_url=upstream_cfg.get("endpoint", {}).get("base_url", ""),
+                endpoint_bearer_key=upstream_cfg.get("endpoint", {}).get("bearer_key", ""),
+            )
+            upstream = UpstreamConfig(
+                name=upstream_cfg.get("name", ""),
+                endpoint=endpoint,
+                routes=upstream_cfg.get("routes", []),
+                priority=upstream_cfg.get("priority", 0),
+            )
+            upstreams.append(upstream)
+
+        # Default upstream (backward compatibility)
+        default_upstream = UpstreamConfig(
+            name="default",
+            endpoint=config.proxy_upstream if config.proxy_upstream.endpoint.base_url else config.llm,
+            routes=[],
+            priority=999,
+        )
+
+        proxy_upstream_router = UpstreamRouter(
+            upstreams=upstreams,
+            default=default_upstream,
+        )
+        logger.info(f"Proxy upstream router initialized: {len(upstreams)} upstream(s)")
+
+        # Context persistence (auto-save to diary)
+        if config.proxy_auto_save_to_diary and diary_dump_service:
+            proxy_context_persistence = ContextPersistence(
+                session_manager=proxy_session_manager,
+                diary_dump_service=diary_dump_service,
+                check_interval_minutes=config.proxy_diary_save_interval_minutes,
+                session_timeout_minutes=config.proxy_session_timeout_minutes,
+            )
+            logger.info("Proxy context persistence initialized")
+
     return Dependencies(
         config=config,
         openai_chat=openai_chat,
@@ -339,10 +453,16 @@ async def create_dependencies(working_dir: Path, config: Config) -> Dependencies
         notification_manager=notification_manager,
         diary=diary,
         extractor_registry=extractor_registry,
+        media_service=media_service,
         memory_service=memory_service,
         memory_formation=memory_formation,
         diary_dump_service=diary_dump_service,
         diary_context_injector=diary_context_injector,
         consolidation_service=consolidation_service,
         working_memory_update_service=working_memory_update_service,
+        proxy_session_manager=proxy_session_manager,
+        proxy_context_persistence=proxy_context_persistence,
+        proxy_user_context_manager=proxy_user_context_manager,
+        proxy_rate_limiter=proxy_rate_limiter,
+        proxy_upstream_router=proxy_upstream_router,
     )
